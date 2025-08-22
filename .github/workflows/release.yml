@@ -1,31 +1,81 @@
-name: Release
+name: deploy
 
 on:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: Select the environment
+        required: true
+        options:
+          - staging
+          - production
 
 jobs:
-  release:
+  setup-build-deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    name: Setup, Build, and Deploy
+    environment: ${{ github.event.inputs.environment }}
+    env:
+      PROJECT_ID: ${{ vars.PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      SERVICE_NAME: mcp-microsoft
+      PORT: 3000
+      VARS_CONTEXT: ${{ toJSON(vars) }}
+      SECRETS_CONTEXT: ${{ toJSON(secrets) }}
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - id: 'GCP-auth'
+        name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          node-version: 20
-          cache: 'npm'
-      - run: npm ci
-      - run: npm run generate
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run build
-      - run: npm test
-      - run: npx semantic-release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.npm_token }}
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }} # pull from secrets
+
+      - name: 'Set up Cloud SDK'
+        uses: 'google-github-actions/setup-gcloud@v2'
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: 'Docker Auth'
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev
+
+      - name: Inject secrets
+        run: |
+          echo "$VARS_CONTEXT" |
+          jq -r 'to_entries |
+          .[] |
+          "\(.key)=\(.value)"' >> .env
+          echo "$SECRETS_CONTEXT" |
+          jq -r 'to_entries |
+          .[] |
+          "\(.key)=\(.value)"' >> .env
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/dume-${{ github.event.inputs.environment }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          build-args: |
+            ENV_NAME=${{ github.event.inputs.environment }}
+
+      - name: Deploy
+        run: |-
+          gcloud run deploy "$SERVICE_NAME" \
+            --quiet \
+            --region "$GCP_REGION" \
+            --image "${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/dume-${{ github.event.inputs.environment }}/${{ env.SERVICE_NAME }}:${{ github.sha }}" \
+            --platform "managed" \
+            --allow-unauthenticated \
+            --port=$PORT
+

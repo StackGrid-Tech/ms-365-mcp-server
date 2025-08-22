@@ -77,6 +77,8 @@ function buildScopesFromEndpoints(includeWorkAccountScopes: boolean = false): st
     }
   });
 
+  scopesSet.add("offline_access");
+
   return Array.from(scopesSet);
 }
 
@@ -114,6 +116,10 @@ class AuthManager {
     const oauthTokenFromEnv = process.env.MS365_MCP_OAUTH_TOKEN;
     this.oauthToken = oauthTokenFromEnv ?? null;
     this.isOAuthMode = oauthTokenFromEnv != null;
+  }
+
+  getScopes(): string[] {
+    return this.scopes;
   }
 
   async loadTokenCache(): Promise<void> {

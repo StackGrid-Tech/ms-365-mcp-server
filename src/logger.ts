@@ -1,14 +1,4 @@
 import winston from 'winston';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const logsDir = path.join(__dirname, '..', 'logs');
-
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir);
-}
 
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
@@ -21,13 +11,10 @@ const logger = winston.createLogger({
     })
   ),
   transports: [
-    new winston.transports.File({
-      filename: path.join(logsDir, 'error.log'),
-      level: 'error',
-    }),
-    new winston.transports.File({
-      filename: path.join(logsDir, 'mcp-server.log'),
-    }),
+    new winston.transports.Console({
+      format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
+      silent: process.env.SILENT === 'true' || process.env.SILENT === '1',
+    })
   ],
 });
 
