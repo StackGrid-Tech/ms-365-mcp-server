@@ -5,6 +5,7 @@ interface ToolSchemaOverride {
   schema?: Record<string, z.ZodType<unknown>>;
   transform?: (params: Record<string, unknown>) => unknown;
   queryTransform?: (params: Record<string, unknown>) => Record<string, string>;
+  pathTransform?: (basePath: string, params: Record<string, unknown>) => string;
 }
 
 function parseRecipients(value: unknown): { emailAddress: { address: string; name?: string } }[] {
@@ -55,49 +56,45 @@ const toolSchemaOverrides = new Map<string, ToolSchemaOverride>();
 
 // ── Mail (Read) ──
 
-const mailListSchema: Record<string, z.ZodType<unknown>> = {
-  search: z.string().optional().describe('Search text to find in emails'),
-  from: z.string().optional().describe('Filter by sender email address'),
-  subject: z.string().optional().describe('Filter by subject text'),
-  unreadOnly: z.boolean().optional().describe('Only return unread emails'),
-  count: z.number().optional().describe('Number of emails to return (default: 10)'),
-};
-
 toolSchemaOverrides.set('list-mail-messages', {
   description:
-    'List emails from your mailbox. Can search and filter by sender, subject, or read status.',
-  schema: mailListSchema,
+    'List emails. Searches your mailbox by default. Set folderId to list a specific folder, or userId to access a shared mailbox.',
+  schema: {
+    search: z.string().optional().describe('Search text to find in emails'),
+    from: z.string().optional().describe('Filter by sender email address'),
+    subject: z.string().optional().describe('Filter by subject text'),
+    unreadOnly: z.boolean().optional().describe('Only return unread emails'),
+    count: z.number().optional().describe('Number of emails to return (default: 10)'),
+    folderId: z
+      .string()
+      .optional()
+      .describe('Mail folder ID to list (use list-mail-folders to find IDs)'),
+    userId: z
+      .string()
+      .optional()
+      .describe('User ID or email for shared mailbox access'),
+  },
   queryTransform: buildMailQueryParams,
-});
-
-toolSchemaOverrides.set('list-mail-folder-messages', {
-  description:
-    'List emails in a specific mail folder. Use list-mail-folders first to get folder IDs.',
-  schema: mailListSchema,
-  queryTransform: buildMailQueryParams,
-});
-
-toolSchemaOverrides.set('list-shared-mailbox-messages', {
-  description:
-    'List emails from a shared mailbox. Provide the user-id of the shared mailbox owner.',
-  schema: mailListSchema,
-  queryTransform: buildMailQueryParams,
-});
-
-toolSchemaOverrides.set('list-shared-mailbox-folder-messages', {
-  description:
-    'List emails in a specific folder of a shared mailbox. Provide user-id and mailFolder-id.',
-  schema: mailListSchema,
-  queryTransform: buildMailQueryParams,
+  pathTransform: (_base, p) => {
+    const root = p.userId ? `/users/${p.userId}` : '/me';
+    if (p.folderId) return `${root}/mailFolders/${p.folderId}/messages`;
+    return `${root}/messages`;
+  },
 });
 
 toolSchemaOverrides.set('get-mail-message', {
   description:
-    'Get a specific email by its message ID. Returns full details including body and recipients.',
-});
-
-toolSchemaOverrides.set('get-shared-mailbox-message', {
-  description: 'Get a specific email from a shared mailbox by user-id and message-id.',
+    'Get a specific email by message-id. Set userId for shared mailbox access.',
+  schema: {
+    userId: z
+      .string()
+      .optional()
+      .describe('User ID or email for shared mailbox access'),
+  },
+  pathTransform: (base, p) => {
+    if (p.userId) return base.replace('/me/', `/users/${p.userId}/`);
+    return base;
+  },
 });
 
 toolSchemaOverrides.set('list-mail-folders', {
@@ -116,7 +113,8 @@ toolSchemaOverrides.set('get-mail-attachment', {
 // ── Mail (Write) ──
 
 toolSchemaOverrides.set('send-mail', {
-  description: 'Send an email. Provide recipients, subject, and content.',
+  description:
+    'Send an email. Set userId to send from a shared mailbox.',
   schema: {
     to: z.string().describe('Comma-separated recipient email addresses'),
     subject: z.string().describe('Email subject line'),
@@ -124,6 +122,10 @@ toolSchemaOverrides.set('send-mail', {
     cc: z.string().optional().describe('Comma-separated CC email addresses'),
     bcc: z.string().optional().describe('Comma-separated BCC email addresses'),
     isHtml: z.boolean().optional().describe('Set true if content is HTML (default: plain text)'),
+    userId: z
+      .string()
+      .optional()
+      .describe('User ID or email to send from a shared mailbox'),
   },
   transform: (p) => ({
     message: {
@@ -135,27 +137,10 @@ toolSchemaOverrides.set('send-mail', {
     },
     saveToSentItems: true,
   }),
-});
-
-toolSchemaOverrides.set('send-shared-mailbox-mail', {
-  description:
-    'Send an email from a shared mailbox. Provide user-id (path), recipients, subject, and content.',
-  schema: {
-    to: z.string().describe('Comma-separated recipient email addresses'),
-    subject: z.string().describe('Email subject line'),
-    content: z.string().describe('Email body content'),
-    cc: z.string().optional().describe('Comma-separated CC email addresses'),
-    isHtml: z.boolean().optional().describe('Set true if content is HTML (default: plain text)'),
+  pathTransform: (base, p) => {
+    if (p.userId) return `/users/${p.userId}/sendMail`;
+    return base;
   },
-  transform: (p) => ({
-    message: {
-      subject: p.subject,
-      body: { contentType: p.isHtml ? 'HTML' : 'Text', content: p.content },
-      toRecipients: parseRecipients(p.to),
-      ...(p.cc ? { ccRecipients: parseRecipients(p.cc) } : {}),
-    },
-    saveToSentItems: true,
-  }),
 });
 
 toolSchemaOverrides.set('create-draft-email', {
@@ -735,9 +720,6 @@ toolSchemaOverrides.set('get-drive-root-item', {
   description: 'Get the root item of a OneDrive drive. Provide the drive-id.',
 });
 
-toolSchemaOverrides.set('get-root-folder', {
-  description: 'Get the root folder of a OneDrive drive. Provide the drive-id.',
-});
 
 toolSchemaOverrides.set('list-folder-files', {
   description:

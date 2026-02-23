@@ -96,7 +96,11 @@ export function registerGraphTools(
 
   for (const tool of api.endpoints) {
     const endpointConfig = endpointsData.find((e) => e.toolName === tool.alias);
-    if (!orgMode && endpointConfig && !endpointConfig.scopes && endpointConfig.workScopes) {
+    if (!endpointConfig) {
+      continue;
+    }
+
+    if (!orgMode && !endpointConfig.scopes && endpointConfig.workScopes) {
       logger.info(`Skipping work account tool ${tool.alias} - not in org mode`);
       continue;
     }
@@ -174,6 +178,12 @@ export function registerGraphTools(
             : null;
 
           let path = tool.path;
+
+          if (override?.pathTransform) {
+            path = override.pathTransform(path, params as Record<string, unknown>);
+            logger.info(`Path rewritten via override: ${path}`);
+          }
+
           const queryParams: Record<string, string> = {};
           const headers: Record<string, string> = {};
           let body: unknown = null;

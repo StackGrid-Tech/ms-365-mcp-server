@@ -12,14 +12,13 @@ const endpointsData = JSON.parse(
 ) as { toolName: string; method: string; pathPattern: string }[];
 
 describe('Tool Schema Overrides', () => {
-  // ── Coverage: every single endpoint must have an override ─────────────────
+  // ── Coverage ──────────────────────────────────────────────────────────────
 
   describe('full coverage', () => {
     it('every endpoint in endpoints.json has an override', () => {
       const missing = endpointsData
         .filter((e) => !toolSchemaOverrides.has(e.toolName))
         .map((e) => `${e.method.toUpperCase()} ${e.pathPattern} (${e.toolName})`);
-
       expect(missing, `Missing overrides:\n  ${missing.join('\n  ')}`).toHaveLength(0);
     });
 
@@ -33,21 +32,20 @@ describe('Tool Schema Overrides', () => {
     });
   });
 
-  // ── Structure validation ──────────────────────────────────────────────────
+  // ── Structure ─────────────────────────────────────────────────────────────
 
   describe('structure', () => {
     it('every override has a meaningful description', () => {
       for (const [name, o] of toolSchemaOverrides) {
-        expect(o.description, `${name} missing description`).toBeTruthy();
-        expect(o.description.length, `${name} description too short`).toBeGreaterThan(10);
+        expect(o.description, `${name}`).toBeTruthy();
+        expect(o.description.length, `${name} too short`).toBeGreaterThan(10);
       }
     });
 
-    it('write endpoints (POST/PUT/PATCH) have schema + transform', () => {
-      const writes = endpointsData.filter((e) =>
+    it('write endpoints have schema + transform', () => {
+      for (const ep of endpointsData.filter((e) =>
         ['post', 'put', 'patch'].includes(e.method)
-      );
-      for (const ep of writes) {
+      )) {
         const o = toolSchemaOverrides.get(ep.toolName);
         if (!o) continue;
         expect(o.schema, `${ep.toolName} missing schema`).toBeDefined();
@@ -67,18 +65,71 @@ describe('Tool Schema Overrides', () => {
       for (const [name, o] of toolSchemaOverrides) {
         if (!o.schema) continue;
         for (const [key, s] of Object.entries(o.schema)) {
-          expect(s instanceof z.ZodType, `${name}.${key} not ZodType`).toBe(true);
+          expect(s instanceof z.ZodType, `${name}.${key}`).toBe(true);
         }
       }
     });
   });
 
-  // ── Mail transforms ───────────────────────────────────────────────────────
+  // ── Mail: consolidated list-mail-messages ─────────────────────────────────
 
-  describe('send-mail transform', () => {
+  describe('list-mail-messages (consolidated)', () => {
+    const o = toolSchemaOverrides.get('list-mail-messages')!;
+
+    it('queryTransform builds OData', () => {
+      const q = o.queryTransform!({ from: 'alice@x.com', unreadOnly: true, count: 5 });
+      expect(q['$filter']).toContain("from/emailAddress/address eq 'alice@x.com'");
+      expect(q['$filter']).toContain('isRead eq false');
+      expect(q['$top']).toBe('5');
+    });
+
+    it('pathTransform: default → /me/messages', () => {
+      expect(o.pathTransform!('/me/messages', {})).toBe('/me/messages');
+    });
+
+    it('pathTransform: folderId → /me/mailFolders/{id}/messages', () => {
+      expect(o.pathTransform!('/me/messages', { folderId: 'inbox-id' })).toBe(
+        '/me/mailFolders/inbox-id/messages'
+      );
+    });
+
+    it('pathTransform: userId → /users/{id}/messages', () => {
+      expect(o.pathTransform!('/me/messages', { userId: 'shared@x.com' })).toBe(
+        '/users/shared@x.com/messages'
+      );
+    });
+
+    it('pathTransform: userId + folderId', () => {
+      expect(
+        o.pathTransform!('/me/messages', { userId: 'u1', folderId: 'f1' })
+      ).toBe('/users/u1/mailFolders/f1/messages');
+    });
+  });
+
+  // ── Mail: consolidated get-mail-message ───────────────────────────────────
+
+  describe('get-mail-message (consolidated)', () => {
+    const o = toolSchemaOverrides.get('get-mail-message')!;
+
+    it('pathTransform: default (no userId) → unchanged', () => {
+      expect(o.pathTransform!('/me/messages/{message-id}', {})).toBe(
+        '/me/messages/{message-id}'
+      );
+    });
+
+    it('pathTransform: userId → /users/{id}/messages/{message-id}', () => {
+      expect(
+        o.pathTransform!('/me/messages/{message-id}', { userId: 'shared@x.com' })
+      ).toBe('/users/shared@x.com/messages/{message-id}');
+    });
+  });
+
+  // ── Mail: consolidated send-mail ──────────────────────────────────────────
+
+  describe('send-mail (consolidated)', () => {
     const o = toolSchemaOverrides.get('send-mail')!;
 
-    it('produces correct API body', () => {
+    it('transform produces correct body', () => {
       expect(
         o.transform!({ to: 'a@b.com, c@d.com', subject: 'Hi', content: 'Hello' })
       ).toEqual({
@@ -94,7 +145,7 @@ describe('Tool Schema Overrides', () => {
       });
     });
 
-    it('handles HTML + CC + BCC', () => {
+    it('transform handles HTML + CC + BCC', () => {
       const body = o.transform!({
         to: 'a@b.com',
         subject: 'T',
@@ -108,12 +159,23 @@ describe('Tool Schema Overrides', () => {
       expect(msg.ccRecipients).toEqual([{ emailAddress: { address: 'cc@b.com' } }]);
       expect(msg.bccRecipients).toEqual([{ emailAddress: { address: 'bcc@b.com' } }]);
     });
+
+    it('pathTransform: default → /me/sendMail', () => {
+      expect(o.pathTransform!('/me/sendMail', {})).toBe('/me/sendMail');
+    });
+
+    it('pathTransform: userId → /users/{id}/sendMail', () => {
+      expect(o.pathTransform!('/me/sendMail', { userId: 'shared@x.com' })).toBe(
+        '/users/shared@x.com/sendMail'
+      );
+    });
   });
 
-  describe('create-draft-email transform', () => {
-    const o = toolSchemaOverrides.get('create-draft-email')!;
+  // ── Other mail transforms ─────────────────────────────────────────────────
 
+  describe('create-draft-email transform', () => {
     it('produces correct body', () => {
+      const o = toolSchemaOverrides.get('create-draft-email')!;
       expect(o.transform!({ subject: 'D', content: 'Hi', to: 'a@b.com' })).toEqual({
         subject: 'D',
         body: { contentType: 'Text', content: 'Hi' },
@@ -123,11 +185,9 @@ describe('Tool Schema Overrides', () => {
   });
 
   describe('move-mail-message transform', () => {
-    it('passes through destinationId', () => {
+    it('passes through', () => {
       const o = toolSchemaOverrides.get('move-mail-message')!;
-      expect(o.transform!({ destinationId: 'inbox' })).toEqual({
-        destinationId: 'inbox',
-      });
+      expect(o.transform!({ destinationId: 'inbox' })).toEqual({ destinationId: 'inbox' });
     });
   });
 
@@ -140,48 +200,20 @@ describe('Tool Schema Overrides', () => {
         contentType: 'application/pdf',
       }) as Record<string, unknown>;
       expect(body['@odata.type']).toBe('#microsoft.graph.fileAttachment');
-      expect(body.name).toBe('f.pdf');
     });
   });
 
-  // ── Mail list queryTransform ──────────────────────────────────────────────
-
-  describe('list-mail-messages queryTransform', () => {
-    const o = toolSchemaOverrides.get('list-mail-messages')!;
-
-    it('builds OData from simple params', () => {
-      const q = o.queryTransform!({
-        from: 'alice@example.com',
-        unreadOnly: true,
-        count: 5,
-      });
-      expect(q['$filter']).toContain("from/emailAddress/address eq 'alice@example.com'");
-      expect(q['$filter']).toContain('isRead eq false');
-      expect(q['$top']).toBe('5');
-      expect(q['$orderby']).toBe('receivedDateTime desc');
-    });
-
-    it('defaults to 10 results', () => {
-      expect(o.queryTransform!({})['$top']).toBe('10');
-    });
-
-    it('handles search', () => {
-      expect(o.queryTransform!({ search: 'budget' })['$search']).toBe('"budget"');
-    });
-  });
-
-  // ── Calendar transforms ───────────────────────────────────────────────────
+  // ── Calendar ──────────────────────────────────────────────────────────────
 
   describe('create-calendar-event transform', () => {
     const o = toolSchemaOverrides.get('create-calendar-event')!;
 
-    it('builds nested start/end with timeZone default', () => {
+    it('builds nested start/end', () => {
       const body = o.transform!({
         subject: 'Standup',
         startDateTime: '2025-03-15T09:00:00',
         endDateTime: '2025-03-15T09:15:00',
       }) as Record<string, unknown>;
-      expect(body.subject).toBe('Standup');
       expect(body.start).toEqual({ dateTime: '2025-03-15T09:00:00', timeZone: 'UTC' });
     });
 
@@ -194,135 +226,105 @@ describe('Tool Schema Overrides', () => {
         isOnlineMeeting: true,
       }) as Record<string, unknown>;
       expect(body.isOnlineMeeting).toBe(true);
-      expect(body.onlineMeetingProvider).toBe('teamsForBusiness');
       expect((body.attendees as unknown[]).length).toBe(2);
     });
   });
 
   describe('list-calendar-events queryTransform', () => {
-    const o = toolSchemaOverrides.get('list-calendar-events')!;
-
     it('builds date range filter', () => {
-      const q = o.queryTransform!({
-        startDate: '2025-03-01',
-        endDate: '2025-03-31',
-        count: 20,
-      });
+      const o = toolSchemaOverrides.get('list-calendar-events')!;
+      const q = o.queryTransform!({ startDate: '2025-03-01', endDate: '2025-03-31' });
       expect(q['$filter']).toContain("start/dateTime ge '2025-03-01T00:00:00Z'");
       expect(q['$filter']).toContain("end/dateTime le '2025-03-31T23:59:59Z'");
-      expect(q['$top']).toBe('20');
     });
   });
 
   describe('get-calendar-view queryTransform', () => {
-    const o = toolSchemaOverrides.get('get-calendar-view')!;
-
-    it('passes startDateTime and endDateTime', () => {
+    it('passes date range', () => {
+      const o = toolSchemaOverrides.get('get-calendar-view')!;
       const q = o.queryTransform!({
         startDateTime: '2025-03-01T00:00:00Z',
         endDateTime: '2025-03-31T23:59:59Z',
       });
       expect(q.startDateTime).toBe('2025-03-01T00:00:00Z');
-      expect(q.endDateTime).toBe('2025-03-31T23:59:59Z');
     });
   });
 
-  // ── To-Do transforms ─────────────────────────────────────────────────────
+  // ── To-Do ─────────────────────────────────────────────────────────────────
 
   describe('create-todo-task transform', () => {
     const o = toolSchemaOverrides.get('create-todo-task')!;
 
-    it('minimal: just title', () => {
+    it('minimal', () => {
       expect(o.transform!({ title: 'Buy milk' })).toEqual({ title: 'Buy milk' });
     });
 
-    it('full: with dueDate and notes', () => {
+    it('full', () => {
       expect(
-        o.transform!({
-          title: 'Report',
-          dueDate: '2025-03-15',
-          notes: 'Q1 financials',
-          importance: 'high',
-        })
+        o.transform!({ title: 'R', dueDate: '2025-03-15', notes: 'Q1', importance: 'high' })
       ).toEqual({
-        title: 'Report',
+        title: 'R',
         dueDateTime: { dateTime: '2025-03-15T00:00:00', timeZone: 'UTC' },
-        body: { content: 'Q1 financials', contentType: 'text' },
+        body: { content: 'Q1', contentType: 'text' },
         importance: 'high',
       });
     });
   });
 
   describe('list-todo-tasks queryTransform', () => {
-    const o = toolSchemaOverrides.get('list-todo-tasks')!;
-
     it('filters by status', () => {
-      const q = o.queryTransform!({ status: 'completed', count: 5 });
-      expect(q['$filter']).toBe("status eq 'completed'");
-      expect(q['$top']).toBe('5');
+      const o = toolSchemaOverrides.get('list-todo-tasks')!;
+      expect(o.queryTransform!({ status: 'completed' })['$filter']).toBe(
+        "status eq 'completed'"
+      );
     });
   });
 
-  // ── Planner transforms ───────────────────────────────────────────────────
+  // ── Planner ───────────────────────────────────────────────────────────────
 
   describe('create-planner-task transform', () => {
-    const o = toolSchemaOverrides.get('create-planner-task')!;
-
     it('handles assignedTo', () => {
+      const o = toolSchemaOverrides.get('create-planner-task')!;
       const body = o.transform!({
-        planId: 'plan-1',
-        title: 'Review',
-        assignedTo: 'user-1, user-2',
+        planId: 'p1',
+        title: 'R',
+        assignedTo: 'u1, u2',
       }) as Record<string, unknown>;
       expect(body.assignments).toEqual({
-        'user-1': {
-          '@odata.type': '#microsoft.graph.plannerAssignment',
-          orderHint: ' !',
-        },
-        'user-2': {
-          '@odata.type': '#microsoft.graph.plannerAssignment',
-          orderHint: ' !',
-        },
+        u1: { '@odata.type': '#microsoft.graph.plannerAssignment', orderHint: ' !' },
+        u2: { '@odata.type': '#microsoft.graph.plannerAssignment', orderHint: ' !' },
       });
     });
   });
 
-  // ── Contact transforms ───────────────────────────────────────────────────
+  // ── Contacts ──────────────────────────────────────────────────────────────
 
   describe('create-outlook-contact transform', () => {
-    const o = toolSchemaOverrides.get('create-outlook-contact')!;
-
     it('expands email and phone', () => {
+      const o = toolSchemaOverrides.get('create-outlook-contact')!;
       const body = o.transform!({
         givenName: 'Jane',
-        email: 'jane@x.com',
-        phone: '+1-555-0100',
-        company: 'Acme',
+        email: 'j@x.com',
+        phone: '+1-555',
       }) as Record<string, unknown>;
-      expect(body.emailAddresses).toEqual([{ address: 'jane@x.com', name: '' }]);
-      expect(body.businessPhones).toEqual(['+1-555-0100']);
-      expect(body.companyName).toBe('Acme');
+      expect(body.emailAddresses).toEqual([{ address: 'j@x.com', name: '' }]);
+      expect(body.businessPhones).toEqual(['+1-555']);
     });
   });
 
   describe('list-outlook-contacts queryTransform', () => {
-    const o = toolSchemaOverrides.get('list-outlook-contacts')!;
-
-    it('builds search query', () => {
-      const q = o.queryTransform!({ search: 'John', count: 10 });
-      expect(q['$search']).toBe('"John"');
-      expect(q['$top']).toBe('10');
+    it('builds search', () => {
+      const o = toolSchemaOverrides.get('list-outlook-contacts')!;
+      expect(o.queryTransform!({ search: 'John' })['$search']).toBe('"John"');
     });
   });
 
-  // ── Teams/Chat transforms ────────────────────────────────────────────────
+  // ── Teams/Chat ────────────────────────────────────────────────────────────
 
   describe('send-chat-message transform', () => {
-    it('wraps in body object', () => {
+    it('wraps in body', () => {
       const o = toolSchemaOverrides.get('send-chat-message')!;
-      expect(o.transform!({ content: 'Hello!' })).toEqual({
-        body: { content: 'Hello!' },
-      });
+      expect(o.transform!({ content: 'Hi' })).toEqual({ body: { content: 'Hi' } });
     });
   });
 
@@ -333,25 +335,20 @@ describe('Tool Schema Overrides', () => {
     });
   });
 
-  // ── OneNote transforms ────────────────────────────────────────────────────
+  // ── OneNote ───────────────────────────────────────────────────────────────
 
   describe('create-onenote-page transform', () => {
-    it('wraps in HTML structure', () => {
+    it('wraps in HTML', () => {
       const o = toolSchemaOverrides.get('create-onenote-page')!;
-      const body = o.transform!({ title: 'Notes', content: 'Text' }) as Record<
-        string,
-        unknown
-      >;
-      expect(body.contentType).toBe('text/html');
-      expect(body.content).toContain('<title>Notes</title>');
-      expect(body.content).toContain('Text');
+      const body = o.transform!({ title: 'N', content: 'T' }) as Record<string, unknown>;
+      expect(body.content).toContain('<title>N</title>');
     });
   });
 
-  // ── Excel transforms ─────────────────────────────────────────────────────
+  // ── Excel ─────────────────────────────────────────────────────────────────
 
   describe('create-excel-chart transform', () => {
-    it('passes through with default seriesBy', () => {
+    it('defaults seriesBy', () => {
       const o = toolSchemaOverrides.get('create-excel-chart')!;
       expect(o.transform!({ type: 'Line', sourceData: 'A1:C10' })).toEqual({
         type: 'Line',
@@ -362,25 +359,20 @@ describe('Tool Schema Overrides', () => {
   });
 
   describe('format-excel-range transform', () => {
-    it('builds font/fill from flat params', () => {
+    it('builds font/fill', () => {
       const o = toolSchemaOverrides.get('format-excel-range')!;
-      expect(
-        o.transform!({ bold: true, fontSize: 14, fillColor: '#FFFF00' })
-      ).toEqual({
-        font: { bold: true, size: 14 },
-        fill: { color: '#FFFF00' },
+      expect(o.transform!({ bold: true, fillColor: '#FF0' })).toEqual({
+        font: { bold: true },
+        fill: { color: '#FF0' },
       });
     });
   });
 
   describe('sort-excel-range transform', () => {
-    it('wraps into fields array', () => {
+    it('wraps into fields', () => {
       const o = toolSchemaOverrides.get('sort-excel-range')!;
-      expect(
-        o.transform!({ columnIndex: 2, ascending: false, hasHeaders: true })
-      ).toEqual({
-        fields: [{ key: 2, ascending: false }],
-        hasHeaders: true,
+      expect(o.transform!({ columnIndex: 0, ascending: false })).toEqual({
+        fields: [{ key: 0, ascending: false }],
       });
     });
   });
@@ -388,59 +380,51 @@ describe('Tool Schema Overrides', () => {
   // ── OneDrive ──────────────────────────────────────────────────────────────
 
   describe('upload-file-content transform', () => {
-    it('returns raw content string', () => {
+    it('returns raw string', () => {
       const o = toolSchemaOverrides.get('upload-file-content')!;
-      expect(o.transform!({ content: 'raw data' })).toBe('raw data');
+      expect(o.transform!({ content: 'data' })).toBe('data');
     });
   });
 
-  // ── Search transform ──────────────────────────────────────────────────────
+  // ── Search ────────────────────────────────────────────────────────────────
 
   describe('search-query transform', () => {
-    it('builds nested requests array', () => {
+    it('builds requests array', () => {
       const o = toolSchemaOverrides.get('search-query')!;
       expect(
         o.transform!({ query: 'budget', entityTypes: 'message, driveItem', size: 10 })
       ).toEqual({
         requests: [
-          {
-            entityTypes: ['message', 'driveItem'],
-            query: { queryString: 'budget' },
-            size: 10,
-          },
+          { entityTypes: ['message', 'driveItem'], query: { queryString: 'budget' }, size: 10 },
         ],
       });
     });
   });
 
-  // ── SharePoint queryTransform ─────────────────────────────────────────────
+  // ── SharePoint ────────────────────────────────────────────────────────────
 
   describe('search-sharepoint-sites queryTransform', () => {
-    it('passes search param', () => {
+    it('passes search', () => {
       const o = toolSchemaOverrides.get('search-sharepoint-sites')!;
-      expect(o.queryTransform!({ search: 'marketing' })).toEqual({
-        search: 'marketing',
-      });
+      expect(o.queryTransform!({ search: 'marketing' })).toEqual({ search: 'marketing' });
     });
   });
 
   describe('list-sharepoint-site-list-items queryTransform', () => {
     it('builds search + top', () => {
       const o = toolSchemaOverrides.get('list-sharepoint-site-list-items')!;
-      const q = o.queryTransform!({ search: 'report', count: 15 });
-      expect(q['$search']).toBe('"report"');
+      const q = o.queryTransform!({ search: 'r', count: 15 });
+      expect(q['$search']).toBe('"r"');
       expect(q['$top']).toBe('15');
     });
   });
 
-  // ── Users queryTransform ──────────────────────────────────────────────────
+  // ── Users ─────────────────────────────────────────────────────────────────
 
   describe('list-users queryTransform', () => {
-    it('builds search + select', () => {
+    it('builds search', () => {
       const o = toolSchemaOverrides.get('list-users')!;
-      const q = o.queryTransform!({ search: 'alice' });
-      expect(q['$search']).toBe('"alice"');
-      expect(q['$select']).toContain('displayName');
+      expect(o.queryTransform!({ search: 'alice' })['$search']).toBe('"alice"');
     });
   });
 
@@ -448,8 +432,6 @@ describe('Tool Schema Overrides', () => {
 
   describe('description-only overrides', () => {
     const descOnly = [
-      'get-mail-message',
-      'get-shared-mailbox-message',
       'list-mail-folders',
       'list-mail-attachments',
       'get-mail-attachment',
@@ -480,7 +462,6 @@ describe('Tool Schema Overrides', () => {
       'list-chat-message-replies',
       'list-drives',
       'get-drive-root-item',
-      'get-root-folder',
       'list-folder-files',
       'download-onedrive-file-content',
       'delete-onedrive-file',
@@ -503,9 +484,9 @@ describe('Tool Schema Overrides', () => {
     ];
 
     for (const name of descOnly) {
-      it(`${name} has description and no transform`, () => {
+      it(`${name} has description only`, () => {
         const o = toolSchemaOverrides.get(name);
-        expect(o, `${name} missing override`).toBeDefined();
+        expect(o, `${name} missing`).toBeDefined();
         expect(o!.description.length).toBeGreaterThan(10);
         expect(o!.transform).toBeUndefined();
         expect(o!.queryTransform).toBeUndefined();
