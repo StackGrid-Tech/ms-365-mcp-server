@@ -130,27 +130,26 @@ export function registerGraphTools(
     }
 
     const override = toolSchemaOverrides.get(tool.alias);
-    if (override && override.schema) {
-      if (override.transform) {
-        const bodyParamNames: string[] = (tool.parameters || [])
-          .filter((p: { type: string }) => p.type === 'Body')
-          .map((p: { name: string }) => p.name);
-        for (const name of bodyParamNames) {
-          delete paramSchema[name];
-        }
-        delete paramSchema['body'];
-      }
-      if (override.queryTransform) {
-        const queryParamNames: string[] = (tool.parameters || [])
-          .filter((p: { type: string }) => p.type === 'Query')
-          .map((p: { name: string }) => p.name);
-        for (const name of queryParamNames) {
-          delete paramSchema[name];
-        }
+    if (override) {
+      const queryParamNames: string[] = (tool.parameters || [])
+        .filter((p: { type: string }) => p.type === 'Query')
+        .map((p: { name: string }) => p.name);
+      for (const name of queryParamNames) {
+        delete paramSchema[name];
       }
 
-      for (const [key, schema] of Object.entries(override.schema)) {
-        paramSchema[key] = schema;
+      const bodyParamNames: string[] = (tool.parameters || [])
+        .filter((p: { type: string }) => p.type === 'Body')
+        .map((p: { name: string }) => p.name);
+      for (const name of bodyParamNames) {
+        delete paramSchema[name];
+      }
+      delete paramSchema['body'];
+
+      if (override.schema) {
+        for (const [key, schema] of Object.entries(override.schema)) {
+          paramSchema[key] = schema;
+        }
       }
     }
 
