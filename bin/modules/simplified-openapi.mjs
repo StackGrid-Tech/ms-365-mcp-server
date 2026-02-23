@@ -45,13 +45,15 @@ export function createAndSaveSimplifiedOpenAPI(endpointsFile, openapiFile, opena
     }
   }
 
+  const requestBodySchemaNames = collectRequestBodySchemaNames(openApiSpec);
+
   if (openApiSpec.components && openApiSpec.components.schemas) {
-    removeODataTypeRecursively(openApiSpec.components.schemas);
+    removeODataTypeRecursively(openApiSpec.components.schemas, requestBodySchemaNames);
     flattenComplexSchemasRecursively(openApiSpec.components.schemas);
   }
 
   if (openApiSpec.paths) {
-    removeODataTypeRecursively(openApiSpec.paths);
+    removeODataTypeFromResponses(openApiSpec.paths);
     simplifyAnyOfInPaths(openApiSpec.paths);
   }
 
@@ -62,20 +64,62 @@ export function createAndSaveSimplifiedOpenAPI(endpointsFile, openapiFile, opena
   fs.writeFileSync(openapiTrimmedFile, yaml.dump(openApiSpec));
 }
 
-function removeODataTypeRecursively(obj) {
+function collectRequestBodySchemaNames(openApiSpec) {
+  const names = new Set();
+  const paths = openApiSpec.paths || {};
+
+  Object.values(paths).forEach((pathItem) => {
+    Object.entries(pathItem).forEach(([method, operation]) => {
+      if (!operation || typeof operation !== 'object') return;
+      if (['get', 'head', 'options'].includes(method)) return;
+
+      if (operation.requestBody?.content) {
+        Object.values(operation.requestBody.content).forEach((content) => {
+          if (content.schema?.$ref) {
+            names.add(content.schema.$ref.replace('#/components/schemas/', ''));
+          }
+        });
+      }
+    });
+  });
+
+  console.log(`   Found ${names.size} request body schemas to preserve @odata.type in: ${[...names].join(', ')}`);
+  return names;
+}
+
+function removeODataTypeRecursively(obj, preserveSchemas) {
   if (!obj || typeof obj !== 'object') return;
 
   if (Array.isArray(obj)) {
-    obj.forEach((item) => removeODataTypeRecursively(item));
+    obj.forEach((item) => removeODataTypeRecursively(item, preserveSchemas));
     return;
   }
 
   Object.keys(obj).forEach((key) => {
+    if (preserveSchemas && preserveSchemas.has(key)) {
+      return;
+    }
     if (key === '@odata.type') {
       delete obj[key];
     } else {
-      removeODataTypeRecursively(obj[key]);
+      removeODataTypeRecursively(obj[key], preserveSchemas);
     }
+  });
+}
+
+function removeODataTypeFromResponses(paths) {
+  if (!paths || typeof paths !== 'object') return;
+
+  Object.values(paths).forEach((pathItem) => {
+    Object.entries(pathItem).forEach(([, operation]) => {
+      if (!operation || typeof operation !== 'object') return;
+      if (operation.responses) {
+        removeODataTypeRecursively(operation.responses);
+      }
+      if (operation.parameters) {
+        removeODataTypeRecursively(operation.parameters);
+      }
+    });
   });
 }
 

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { toolSchemaOverrides } from './tool-schemas.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -124,9 +125,27 @@ export function registerGraphTools(
         .optional();
     }
 
+    const override = toolSchemaOverrides.get(tool.alias);
+    if (override) {
+      const bodyParamNames: string[] = (tool.parameters || [])
+        .filter((p: { type: string }) => p.type === 'Body')
+        .map((p: { name: string }) => p.name);
+      for (const name of bodyParamNames) {
+        delete paramSchema[name];
+      }
+      delete paramSchema['body'];
+
+      paramSchema['body'] = override.bodySchema;
+    }
+
+    const toolDescription =
+      override?.description ||
+      tool.description ||
+      `Execute ${tool.method.toUpperCase()} request to ${tool.path}`;
+
     server.tool(
       tool.alias,
-      tool.description || `Execute ${tool.method.toUpperCase()} request to ${tool.path}`,
+      toolDescription,
       paramSchema,
       {
         title: tool.alias,
