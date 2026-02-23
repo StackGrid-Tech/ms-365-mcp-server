@@ -72,7 +72,7 @@ toolSchemaOverrides.set('list-mail-messages', {
     userId: z
       .string()
       .optional()
-      .describe('User ID or email for shared mailbox access'),
+      .describe('User ID or email for shared mailbox access. Leave it blank to use the current user'),
   },
   queryTransform: buildMailQueryParams,
   pathTransform: (_base, p) => {
