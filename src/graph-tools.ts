@@ -111,7 +111,7 @@ export function registerGraphTools(
       continue;
     }
 
-    const paramSchema: Record<string, unknown> = {};
+    const paramSchema: Record<string, z.ZodType<unknown>> = {};
     if (tool.parameters && tool.parameters.length > 0) {
       for (const param of tool.parameters) {
         paramSchema[param.name] = param.schema || z.any();
@@ -135,7 +135,9 @@ export function registerGraphTools(
       }
       delete paramSchema['body'];
 
-      paramSchema['body'] = override.bodySchema;
+      for (const [key, schema] of Object.entries(override.schema)) {
+        paramSchema[key] = schema;
+      }
     }
 
     const toolDescription =
@@ -157,14 +159,24 @@ export function registerGraphTools(
           logger.info(`params: ${JSON.stringify(params)}`);
 
           const parameterDefinitions = tool.parameters || [];
+          const overrideParamNames = override ? new Set(Object.keys(override.schema)) : null;
 
           let path = tool.path;
           const queryParams: Record<string, string> = {};
           const headers: Record<string, string> = {};
           let body: unknown = null;
+
+          if (override) {
+            body = override.transform(params as Record<string, unknown>);
+            logger.info(`Transformed body via override: ${JSON.stringify(body)}`);
+          }
+
           for (let [paramName, paramValue] of Object.entries(params)) {
-            // Skip pagination control parameter - it's not part of the Microsoft Graph API - I think 🤷
             if (paramName === 'fetchAllPages') {
+              continue;
+            }
+
+            if (overrideParamNames?.has(paramName)) {
               continue;
             }
 
@@ -199,14 +211,14 @@ export function registerGraphTools(
                   break;
 
                 case 'Body':
-                  body = paramValue;
+                  if (!override) body = paramValue;
                   break;
 
                 case 'Header':
                   headers[fixedParamName] = `${paramValue}`;
                   break;
               }
-            } else if (paramName === 'body') {
+            } else if (paramName === 'body' && !override) {
               body = paramValue;
               logger.info(`Set body param: ${JSON.stringify(body)}`);
             }
