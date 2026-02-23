@@ -16,6 +16,8 @@ function parseRecipients(value: unknown): { emailAddress: { address: string; nam
     .map((addr) => ({ emailAddress: { address: addr } }));
 }
 
+// ── Shared helpers ──────────────────────────────────────────────────────────────
+
 const DEFAULT_MAIL_SELECT =
   'id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,hasAttachments';
 
@@ -33,9 +35,25 @@ function buildMailQueryParams(p: Record<string, unknown>): Record<string, string
   return params;
 }
 
+function buildGenericListQuery(p: Record<string, unknown>): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (p.search) params['$search'] = `"${p.search}"`;
+  if (p.count) params['$top'] = String(p.count);
+  return params;
+}
+
+const genericListSchema: Record<string, z.ZodType<unknown>> = {
+  search: z.string().optional().describe('Search text'),
+  count: z.number().optional().describe('Max results to return'),
+};
+
 const toolSchemaOverrides = new Map<string, ToolSchemaOverride>();
 
-// ── Mail (Read) ─────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── MAIL ─────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Mail (Read) ──
 
 const mailListSchema: Record<string, z.ZodType<unknown>> = {
   search: z.string().optional().describe('Search text to find in emails'),
@@ -46,7 +64,8 @@ const mailListSchema: Record<string, z.ZodType<unknown>> = {
 };
 
 toolSchemaOverrides.set('list-mail-messages', {
-  description: 'List emails from your mailbox. Can search and filter by sender, subject, or read status.',
+  description:
+    'List emails from your mailbox. Can search and filter by sender, subject, or read status.',
   schema: mailListSchema,
   queryTransform: buildMailQueryParams,
 });
@@ -74,16 +93,16 @@ toolSchemaOverrides.set('list-shared-mailbox-folder-messages', {
 
 toolSchemaOverrides.set('get-mail-message', {
   description:
-    'Get a specific email by its message ID. Returns full email details including body, recipients, and attachments.',
+    'Get a specific email by its message ID. Returns full details including body and recipients.',
 });
 
 toolSchemaOverrides.set('get-shared-mailbox-message', {
-  description:
-    'Get a specific email from a shared mailbox by user-id and message-id.',
+  description: 'Get a specific email from a shared mailbox by user-id and message-id.',
 });
 
 toolSchemaOverrides.set('list-mail-folders', {
-  description: 'List your mail folders (inbox, sent items, drafts, etc.). Returns folder names and IDs.',
+  description:
+    'List your mail folders (inbox, sent items, drafts, etc.). Returns folder names and IDs.',
 });
 
 toolSchemaOverrides.set('list-mail-attachments', {
@@ -94,7 +113,7 @@ toolSchemaOverrides.set('get-mail-attachment', {
   description: 'Get a specific attachment from an email. Provide message-id and attachment-id.',
 });
 
-// ── Mail (Write) ────────────────────────────────────────────────────────────────
+// ── Mail (Write) ──
 
 toolSchemaOverrides.set('send-mail', {
   description: 'Send an email. Provide recipients, subject, and content.',
@@ -156,7 +175,7 @@ toolSchemaOverrides.set('create-draft-email', {
 
 toolSchemaOverrides.set('move-mail-message', {
   description:
-    'Move an email to a folder. Use list-mail-folders to find folder IDs. Common names: "inbox", "drafts", "deleteditems", "sentitems".',
+    'Move an email to a folder. Common folder names: "inbox", "drafts", "deleteditems", "sentitems". Use list-mail-folders to find other folder IDs.',
   schema: {
     destinationId: z.string().describe('Destination folder ID or well-known name'),
   },
@@ -178,16 +197,100 @@ toolSchemaOverrides.set('add-mail-attachment', {
   }),
 });
 
-// ── Calendar ────────────────────────────────────────────────────────────────────
+// ── Mail (Delete) ──
+
+toolSchemaOverrides.set('delete-mail-message', {
+  description: 'Delete an email. Provide the message-id of the email to delete.',
+});
+
+toolSchemaOverrides.set('delete-mail-attachment', {
+  description:
+    'Delete an attachment from an email. Provide message-id and attachment-id.',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── CALENDAR ─────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Calendar (Read) ──
+
+toolSchemaOverrides.set('list-calendar-events', {
+  description:
+    'List your calendar events. Can filter by date range, subject, or search text.',
+  schema: {
+    search: z.string().optional().describe('Search text to find in events'),
+    startDate: z
+      .string()
+      .optional()
+      .describe('Filter events starting after this date (YYYY-MM-DD)'),
+    endDate: z
+      .string()
+      .optional()
+      .describe('Filter events ending before this date (YYYY-MM-DD)'),
+    count: z.number().optional().describe('Number of events to return (default: 10)'),
+  },
+  queryTransform: (p) => {
+    const params: Record<string, string> = {};
+    if (p.search) params['$search'] = `"${p.search}"`;
+    const filters: string[] = [];
+    if (p.startDate) filters.push(`start/dateTime ge '${p.startDate}T00:00:00Z'`);
+    if (p.endDate) filters.push(`end/dateTime le '${p.endDate}T23:59:59Z'`);
+    if (filters.length > 0) params['$filter'] = filters.join(' and ');
+    params['$top'] = String(p.count || 10);
+    params['$orderby'] = 'start/dateTime';
+    params['$select'] = 'id,subject,start,end,location,organizer,isOnlineMeeting,bodyPreview';
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-calendar-event', {
+  description: 'Get a specific calendar event by its event-id. Returns full event details.',
+});
+
+toolSchemaOverrides.set('get-calendar-view', {
+  description:
+    'Get calendar events in a specific date/time range. Expands recurring events into individual occurrences.',
+  schema: {
+    startDateTime: z
+      .string()
+      .describe('Range start in ISO 8601, e.g. "2025-03-01T00:00:00Z"'),
+    endDateTime: z
+      .string()
+      .describe('Range end in ISO 8601, e.g. "2025-03-31T23:59:59Z"'),
+    count: z.number().optional().describe('Max events to return'),
+  },
+  queryTransform: (p) => {
+    const params: Record<string, string> = {};
+    params['startDateTime'] = p.startDateTime as string;
+    params['endDateTime'] = p.endDateTime as string;
+    if (p.count) params['$top'] = String(p.count);
+    params['$select'] = 'id,subject,start,end,location,organizer,isOnlineMeeting';
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('list-calendars', {
+  description:
+    'List all your calendars (primary, shared, group calendars). Returns calendar names and IDs.',
+});
+
+// ── Calendar (Write) ──
 
 toolSchemaOverrides.set('create-calendar-event', {
   description:
-    'Create a calendar event. Provide subject, start/end datetimes. Dates should be ISO 8601 format like "2025-03-15T09:00:00".',
+    'Create a calendar event. Dates should be ISO 8601 format like "2025-03-15T09:00:00".',
   schema: {
     subject: z.string().describe('Event title'),
-    startDateTime: z.string().describe('Start date/time in ISO 8601, e.g. "2025-03-15T09:00:00"'),
-    endDateTime: z.string().describe('End date/time in ISO 8601, e.g. "2025-03-15T10:00:00"'),
-    timeZone: z.string().optional().describe('IANA time zone, e.g. "America/New_York" (default: "UTC")'),
+    startDateTime: z
+      .string()
+      .describe('Start date/time in ISO 8601, e.g. "2025-03-15T09:00:00"'),
+    endDateTime: z
+      .string()
+      .describe('End date/time in ISO 8601, e.g. "2025-03-15T10:00:00"'),
+    timeZone: z
+      .string()
+      .optional()
+      .describe('IANA time zone, e.g. "America/New_York" (default: "UTC")'),
     location: z.string().optional().describe('Location name'),
     attendees: z.string().optional().describe('Comma-separated attendee email addresses'),
     body: z.string().optional().describe('Event description/notes'),
@@ -236,14 +339,55 @@ toolSchemaOverrides.set('update-calendar-event', {
   }),
 });
 
-// ── To-Do Tasks ─────────────────────────────────────────────────────────────────
+// ── Calendar (Delete) ──
+
+toolSchemaOverrides.set('delete-calendar-event', {
+  description: 'Delete a calendar event. Provide the event-id.',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── TO-DO TASKS ──────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── To-Do (Read) ──
+
+toolSchemaOverrides.set('list-todo-task-lists', {
+  description:
+    'List your To-Do task lists. Returns list names and IDs needed for other To-Do operations.',
+});
+
+toolSchemaOverrides.set('list-todo-tasks', {
+  description: 'List tasks in a To-Do task list. Provide the task list ID.',
+  schema: {
+    status: z
+      .enum(['notStarted', 'inProgress', 'completed', 'waitingOnOthers', 'deferred'])
+      .optional()
+      .describe('Filter by task status'),
+    count: z.number().optional().describe('Max tasks to return'),
+  },
+  queryTransform: (p) => {
+    const params: Record<string, string> = {};
+    if (p.status) params['$filter'] = `status eq '${p.status}'`;
+    if (p.count) params['$top'] = String(p.count);
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-todo-task', {
+  description: 'Get a specific To-Do task by task list ID and task ID.',
+});
+
+// ── To-Do (Write) ──
 
 toolSchemaOverrides.set('create-todo-task', {
   description:
     'Create a To-Do task. Requires a title. Use list-todo-task-lists to get the task list ID.',
   schema: {
     title: z.string().describe('Task title'),
-    dueDate: z.string().optional().describe('Due date in YYYY-MM-DD format, e.g. "2025-03-15"'),
+    dueDate: z
+      .string()
+      .optional()
+      .describe('Due date in YYYY-MM-DD format, e.g. "2025-03-15"'),
     notes: z.string().optional().describe('Task notes/details'),
     importance: z.enum(['low', 'normal', 'high']).optional().describe('Task importance'),
   },
@@ -280,17 +424,51 @@ toolSchemaOverrides.set('update-todo-task', {
   }),
 });
 
-// ── Planner Tasks ───────────────────────────────────────────────────────────────
+// ── To-Do (Delete) ──
+
+toolSchemaOverrides.set('delete-todo-task', {
+  description: 'Delete a To-Do task. Provide the task list ID and task ID.',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── PLANNER ──────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Planner (Read) ──
+
+toolSchemaOverrides.set('list-planner-tasks', {
+  description: 'List all your Planner tasks across all plans.',
+});
+
+toolSchemaOverrides.set('get-planner-plan', {
+  description: 'Get details of a specific Planner plan by its plan ID.',
+});
+
+toolSchemaOverrides.set('list-plan-tasks', {
+  description: 'List all tasks in a specific Planner plan. Provide the plan ID.',
+});
+
+toolSchemaOverrides.set('get-planner-task', {
+  description: 'Get details of a specific Planner task by its task ID.',
+});
+
+// ── Planner (Write) ──
 
 toolSchemaOverrides.set('create-planner-task', {
   description:
-    'Create a Planner task. Requires planId and title. Use list-planner-tasks or get-planner-plan to find the planId.',
+    'Create a Planner task. Use list-planner-tasks or get-planner-plan to find the planId.',
   schema: {
     planId: z.string().describe('Plan ID (from list-planner-tasks or get-planner-plan)'),
     title: z.string().describe('Task title'),
     bucketId: z.string().optional().describe('Bucket ID to place the task in'),
-    dueDate: z.string().optional().describe('Due date in ISO 8601 format, e.g. "2025-03-15T00:00:00Z"'),
-    assignedTo: z.string().optional().describe('Comma-separated user IDs to assign the task to'),
+    dueDate: z
+      .string()
+      .optional()
+      .describe('Due date in ISO 8601 format, e.g. "2025-03-15T00:00:00Z"'),
+    assignedTo: z
+      .string()
+      .optional()
+      .describe('Comma-separated user IDs to assign the task to'),
   },
   transform: (p) => ({
     planId: p.planId,
@@ -322,8 +500,14 @@ toolSchemaOverrides.set('update-planner-task', {
   schema: {
     title: z.string().optional().describe('New task title'),
     percentComplete: z.number().optional().describe('Percentage complete (0-100)'),
-    dueDate: z.string().optional().describe('Due date in ISO 8601 format, or empty to clear'),
-    priority: z.number().optional().describe('Priority: 0=urgent, 1=important, 2=medium, 5=low'),
+    dueDate: z
+      .string()
+      .optional()
+      .describe('Due date in ISO 8601 format, or empty to clear'),
+    priority: z
+      .number()
+      .optional()
+      .describe('Priority: 0=urgent, 1=important, 2=medium, 5=low'),
   },
   transform: (p) => ({
     ...(p.title ? { title: p.title } : {}),
@@ -343,7 +527,28 @@ toolSchemaOverrides.set('update-planner-task-details', {
   }),
 });
 
-// ── Outlook Contacts ────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── OUTLOOK CONTACTS ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Contacts (Read) ──
+
+toolSchemaOverrides.set('list-outlook-contacts', {
+  description: 'List your Outlook contacts. Can search by name or email.',
+  schema: genericListSchema,
+  queryTransform: (p) => {
+    const params = buildGenericListQuery(p);
+    if (!p.count) params['$top'] = '25';
+    params['$select'] = 'id,displayName,givenName,surname,emailAddresses,businessPhones,companyName,jobTitle';
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-outlook-contact', {
+  description: 'Get a specific Outlook contact by its contact-id.',
+});
+
+// ── Contacts (Write) ──
 
 toolSchemaOverrides.set('create-outlook-contact', {
   description: 'Create an Outlook contact.',
@@ -385,7 +590,106 @@ toolSchemaOverrides.set('update-outlook-contact', {
   }),
 });
 
-// ── Teams / Chat Messages ───────────────────────────────────────────────────────
+// ── Contacts (Delete) ──
+
+toolSchemaOverrides.set('delete-outlook-contact', {
+  description: 'Delete an Outlook contact. Provide the contact-id.',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── USER / PROFILE ───────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+toolSchemaOverrides.set('get-current-user', {
+  description: 'Get your own profile info (name, email, job title, etc.).',
+});
+
+toolSchemaOverrides.set('list-users', {
+  description: 'List users in your organization. Can search by name or email.',
+  schema: genericListSchema,
+  queryTransform: (p) => {
+    const params = buildGenericListQuery(p);
+    if (!p.count) params['$top'] = '25';
+    params['$select'] = 'id,displayName,mail,userPrincipalName,jobTitle,department';
+    return params;
+  },
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── TEAMS / CHAT ─────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Teams (Read) ──
+
+toolSchemaOverrides.set('list-joined-teams', {
+  description: 'List all Teams you are a member of. Returns team names and IDs.',
+});
+
+toolSchemaOverrides.set('get-team', {
+  description: 'Get details of a specific Team by its team-id.',
+});
+
+toolSchemaOverrides.set('list-team-channels', {
+  description: 'List channels in a Team. Provide the team-id.',
+});
+
+toolSchemaOverrides.set('get-team-channel', {
+  description: 'Get details of a specific channel. Provide team-id and channel-id.',
+});
+
+toolSchemaOverrides.set('list-team-members', {
+  description: 'List members of a Team. Provide the team-id.',
+});
+
+toolSchemaOverrides.set('list-channel-messages', {
+  description: 'List messages in a Teams channel. Provide team-id and channel-id.',
+  schema: {
+    count: z.number().optional().describe('Max messages to return'),
+  },
+  queryTransform: (p) => {
+    const params: Record<string, string> = {};
+    if (p.count) params['$top'] = String(p.count);
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-channel-message', {
+  description:
+    'Get a specific message from a Teams channel. Provide team-id, channel-id, and message-id.',
+});
+
+// ── Chat (Read) ──
+
+toolSchemaOverrides.set('list-chats', {
+  description: 'List your Teams chats (1:1, group chats, meeting chats).',
+});
+
+toolSchemaOverrides.set('get-chat', {
+  description: 'Get details of a specific Teams chat by its chat-id.',
+});
+
+toolSchemaOverrides.set('list-chat-messages', {
+  description: 'List messages in a Teams chat. Provide the chat-id.',
+  schema: {
+    count: z.number().optional().describe('Max messages to return'),
+  },
+  queryTransform: (p) => {
+    const params: Record<string, string> = {};
+    if (p.count) params['$top'] = String(p.count);
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-chat-message', {
+  description: 'Get a specific message from a Teams chat. Provide chat-id and message-id.',
+});
+
+toolSchemaOverrides.set('list-chat-message-replies', {
+  description:
+    'List replies to a specific Teams chat message. Provide chat-id and message-id.',
+});
+
+// ── Teams/Chat (Write) ──
 
 toolSchemaOverrides.set('send-chat-message', {
   description: 'Send a message in a Teams chat.',
@@ -417,30 +721,81 @@ toolSchemaOverrides.set('reply-to-chat-message', {
   }),
 });
 
-// ── OneNote ─────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── ONEDRIVE / FILES ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
 
-toolSchemaOverrides.set('create-onenote-page', {
-  description: 'Create a OneNote page with a title and HTML content.',
-  schema: {
-    title: z.string().describe('Page title'),
-    content: z.string().describe('Page content (plain text or HTML)'),
-  },
-  transform: (p) => ({
-    contentType: 'text/html',
-    content: `<html><head><title>${p.title}</title></head><body>${p.content}</body></html>`,
-  }),
+// ── OneDrive (Read) ──
+
+toolSchemaOverrides.set('list-drives', {
+  description: 'List your OneDrive drives. Returns drive names and IDs.',
 });
 
-// ── Excel ───────────────────────────────────────────────────────────────────────
+toolSchemaOverrides.set('get-drive-root-item', {
+  description: 'Get the root item of a OneDrive drive. Provide the drive-id.',
+});
+
+toolSchemaOverrides.set('get-root-folder', {
+  description: 'Get the root folder of a OneDrive drive. Provide the drive-id.',
+});
+
+toolSchemaOverrides.set('list-folder-files', {
+  description:
+    'List files and folders inside a OneDrive folder. Provide drive-id and folder item-id.',
+});
+
+toolSchemaOverrides.set('download-onedrive-file-content', {
+  description:
+    'Download file content from OneDrive. Provide drive-id, parent folder item-id, and file item-id.',
+});
+
+// ── OneDrive (Write) ──
+
+toolSchemaOverrides.set('upload-file-content', {
+  description: 'Upload or replace file content in OneDrive.',
+  schema: {
+    content: z.string().describe('File content (text or base64 for binary)'),
+  },
+  transform: (p) => p.content,
+});
+
+// ── OneDrive (Delete) ──
+
+toolSchemaOverrides.set('delete-onedrive-file', {
+  description: 'Delete a file or folder from OneDrive. Provide drive-id and item-id.',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── EXCEL ────────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+// ── Excel (Read) ──
+
+toolSchemaOverrides.set('list-excel-worksheets', {
+  description:
+    'List worksheets in an Excel workbook. Provide drive-id and workbook item-id.',
+});
+
+toolSchemaOverrides.set('get-excel-range', {
+  description:
+    'Get values from a range of cells in an Excel worksheet. Provide drive-id, workbook item-id, worksheet-id, and cell range address.',
+});
+
+// ── Excel (Write) ──
 
 toolSchemaOverrides.set('create-excel-chart', {
   description: 'Create a chart in an Excel worksheet.',
   schema: {
     type: z
       .string()
-      .describe('Chart type: "ColumnClustered", "Pie", "Line", "Bar", "Area", "XYScatter"'),
+      .describe(
+        'Chart type: "ColumnClustered", "Pie", "Line", "Bar", "Area", "XYScatter"'
+      ),
     sourceData: z.string().describe('Data range, e.g. "A1:B5"'),
-    seriesBy: z.enum(['Auto', 'Columns', 'Rows']).optional().describe('Data series orientation (default: "Auto")'),
+    seriesBy: z
+      .enum(['Auto', 'Columns', 'Rows'])
+      .optional()
+      .describe('Data series orientation (default: "Auto")'),
   },
   transform: (p) => ({
     type: p.type,
@@ -450,14 +805,17 @@ toolSchemaOverrides.set('create-excel-chart', {
 });
 
 toolSchemaOverrides.set('format-excel-range', {
-  description: 'Format cells in an Excel worksheet. Provide a JSON formatting object.',
+  description: 'Format cells in an Excel worksheet.',
   schema: {
     bold: z.boolean().optional().describe('Make text bold'),
     italic: z.boolean().optional().describe('Make text italic'),
     fontSize: z.number().optional().describe('Font size in points'),
     fontColor: z.string().optional().describe('Font color hex, e.g. "#FF0000"'),
     fillColor: z.string().optional().describe('Background color hex, e.g. "#FFFF00"'),
-    numberFormat: z.string().optional().describe('Number format, e.g. "$#,##0.00", "0%"'),
+    numberFormat: z
+      .string()
+      .optional()
+      .describe('Number format, e.g. "$#,##0.00", "0%"'),
   },
   transform: (p) => {
     const result: Record<string, unknown> = {};
@@ -484,7 +842,10 @@ toolSchemaOverrides.set('sort-excel-range', {
   schema: {
     columnIndex: z.number().describe('Column index to sort by (0-based)'),
     ascending: z.boolean().optional().describe('Sort ascending (default: true)'),
-    hasHeaders: z.boolean().optional().describe('Range has a header row (default: false)'),
+    hasHeaders: z
+      .boolean()
+      .optional()
+      .describe('Range has a header row (default: false)'),
   },
   transform: (p) => ({
     fields: [{ key: p.columnIndex, ascending: p.ascending !== false }],
@@ -492,27 +853,131 @@ toolSchemaOverrides.set('sort-excel-range', {
   }),
 });
 
-// ── OneDrive Upload ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── ONENOTE ──────────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
 
-toolSchemaOverrides.set('upload-file-content', {
-  description: 'Upload or replace file content in OneDrive.',
-  schema: {
-    content: z.string().describe('File content (text or base64 for binary)'),
-  },
-  transform: (p) => p.content,
+// ── OneNote (Read) ──
+
+toolSchemaOverrides.set('list-onenote-notebooks', {
+  description: 'List your OneNote notebooks. Returns notebook names and IDs.',
 });
 
-// ── Microsoft Search ────────────────────────────────────────────────────────────
+toolSchemaOverrides.set('list-onenote-notebook-sections', {
+  description:
+    'List sections in a OneNote notebook. Provide the notebook-id.',
+});
+
+toolSchemaOverrides.set('list-onenote-section-pages', {
+  description:
+    'List pages in a OneNote section. Provide the section-id.',
+});
+
+toolSchemaOverrides.set('get-onenote-page-content', {
+  description:
+    'Get the HTML content of a OneNote page. Provide the page-id.',
+});
+
+// ── OneNote (Write) ──
+
+toolSchemaOverrides.set('create-onenote-page', {
+  description: 'Create a OneNote page with a title and content.',
+  schema: {
+    title: z.string().describe('Page title'),
+    content: z.string().describe('Page content (plain text or HTML)'),
+  },
+  transform: (p) => ({
+    contentType: 'text/html',
+    content: `<html><head><title>${p.title}</title></head><body>${p.content}</body></html>`,
+  }),
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── SHAREPOINT ───────────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
+
+toolSchemaOverrides.set('search-sharepoint-sites', {
+  description: 'Search for SharePoint sites by name or keyword.',
+  schema: {
+    search: z.string().describe('Search text to find SharePoint sites'),
+  },
+  queryTransform: (p) => ({
+    search: p.search as string,
+  }),
+});
+
+toolSchemaOverrides.set('get-sharepoint-site', {
+  description: 'Get details of a specific SharePoint site. Provide the site-id.',
+});
+
+toolSchemaOverrides.set('list-sharepoint-site-drives', {
+  description:
+    'List document libraries (drives) in a SharePoint site. Provide the site-id.',
+});
+
+toolSchemaOverrides.set('get-sharepoint-site-drive-by-id', {
+  description:
+    'Get a specific document library in a SharePoint site. Provide site-id and drive-id.',
+});
+
+toolSchemaOverrides.set('list-sharepoint-site-items', {
+  description: 'List items in a SharePoint site. Provide the site-id.',
+});
+
+toolSchemaOverrides.set('get-sharepoint-site-item', {
+  description:
+    'Get a specific item from a SharePoint site. Provide site-id and item-id.',
+});
+
+toolSchemaOverrides.set('list-sharepoint-site-lists', {
+  description: 'List all lists in a SharePoint site. Provide the site-id.',
+});
+
+toolSchemaOverrides.set('get-sharepoint-site-list', {
+  description:
+    'Get a specific list from a SharePoint site. Provide site-id and list-id.',
+});
+
+toolSchemaOverrides.set('list-sharepoint-site-list-items', {
+  description:
+    'List items in a SharePoint list. Provide site-id and list-id.',
+  schema: genericListSchema,
+  queryTransform: (p) => {
+    const params = buildGenericListQuery(p);
+    if (!p.count) params['$top'] = '25';
+    return params;
+  },
+});
+
+toolSchemaOverrides.set('get-sharepoint-site-list-item', {
+  description:
+    'Get a specific item from a SharePoint list. Provide site-id, list-id, and item-id.',
+});
+
+toolSchemaOverrides.set('get-sharepoint-site-by-path', {
+  description:
+    'Get a SharePoint site by its URL path, e.g. "/sites/marketing".',
+});
+
+toolSchemaOverrides.set('get-sharepoint-sites-delta', {
+  description: 'Get recently changed SharePoint sites (delta query).',
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════
+// ── MICROSOFT SEARCH ─────────────────────────────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════════
 
 toolSchemaOverrides.set('search-query', {
   description:
     'Search across Microsoft 365: emails, calendar, files, SharePoint, Teams. Provide a query and what to search.',
   schema: {
-    query: z.string().describe('Search text, e.g. "budget report", "from:user@example.com"'),
+    query: z
+      .string()
+      .describe('Search text, e.g. "budget report", "from:user@example.com"'),
     entityTypes: z
       .string()
       .describe(
-        'Comma-separated types to search: "message" (email), "event" (calendar), "driveItem" (files), "chatMessage" (Teams), "site" (SharePoint), "person"'
+        'Comma-separated types: "message" (email), "event" (calendar), "driveItem" (files), "chatMessage" (Teams), "site" (SharePoint), "person"'
       ),
     size: z.number().optional().describe('Number of results (default: 25)'),
   },

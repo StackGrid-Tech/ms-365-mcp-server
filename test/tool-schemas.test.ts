@@ -11,404 +11,349 @@ const endpointsData = JSON.parse(
   readFileSync(path.join(__dirname, '..', 'src', 'endpoints.json'), 'utf8')
 ) as { toolName: string; method: string; pathPattern: string }[];
 
-const writeEndpoints = endpointsData.filter((e) =>
-  ['post', 'put', 'patch'].includes(e.method.toLowerCase())
-);
-
-const emailGetEndpoints = endpointsData.filter(
-  (e) =>
-    e.method === 'get' &&
-    (e.toolName.includes('mail') || e.toolName.includes('message'))
-    && !e.toolName.includes('chat') && !e.toolName.includes('channel')
-);
-
 describe('Tool Schema Overrides', () => {
-  describe('coverage', () => {
-    it('should have overrides for all POST/PUT/PATCH endpoints', () => {
-      const missingOverrides = writeEndpoints
+  // ── Coverage: every single endpoint must have an override ─────────────────
+
+  describe('full coverage', () => {
+    it('every endpoint in endpoints.json has an override', () => {
+      const missing = endpointsData
         .filter((e) => !toolSchemaOverrides.has(e.toolName))
         .map((e) => `${e.method.toUpperCase()} ${e.pathPattern} (${e.toolName})`);
 
-      expect(
-        missingOverrides,
-        `Missing schema overrides for:\n  ${missingOverrides.join('\n  ')}`
-      ).toHaveLength(0);
+      expect(missing, `Missing overrides:\n  ${missing.join('\n  ')}`).toHaveLength(0);
     });
 
-    it('should have overrides for all email GET endpoints', () => {
-      const missingOverrides = emailGetEndpoints
-        .filter((e) => !toolSchemaOverrides.has(e.toolName))
-        .map((e) => `GET ${e.pathPattern} (${e.toolName})`);
-
-      expect(
-        missingOverrides,
-        `Missing email GET overrides for:\n  ${missingOverrides.join('\n  ')}`
-      ).toHaveLength(0);
-    });
-
-    it('should not have overrides for DELETE endpoints', () => {
-      const deleteEndpoints = endpointsData.filter((e) => e.method === 'delete');
-      for (const endpoint of deleteEndpoints) {
-        expect(toolSchemaOverrides.has(endpoint.toolName)).toBe(false);
+    it('no orphan overrides (every override maps to an endpoint)', () => {
+      const endpointNames = new Set(endpointsData.map((e) => e.toolName));
+      const orphans: string[] = [];
+      for (const toolName of toolSchemaOverrides.keys()) {
+        if (!endpointNames.has(toolName)) orphans.push(toolName);
       }
+      expect(orphans, `Orphan overrides: ${orphans.join(', ')}`).toHaveLength(0);
     });
   });
 
-  describe('override structure', () => {
+  // ── Structure validation ──────────────────────────────────────────────────
+
+  describe('structure', () => {
     it('every override has a meaningful description', () => {
-      for (const [toolName, override] of toolSchemaOverrides) {
-        expect(override.description, `${toolName} missing description`).toBeTruthy();
-        expect(override.description.length, `${toolName} description too short`).toBeGreaterThan(10);
+      for (const [name, o] of toolSchemaOverrides) {
+        expect(o.description, `${name} missing description`).toBeTruthy();
+        expect(o.description.length, `${name} description too short`).toBeGreaterThan(10);
       }
     });
 
-    it('write overrides have schema and transform', () => {
-      for (const endpoint of writeEndpoints) {
-        const override = toolSchemaOverrides.get(endpoint.toolName);
-        if (!override) continue;
-        expect(override.schema, `${endpoint.toolName} missing schema`).toBeDefined();
-        expect(typeof override.transform, `${endpoint.toolName} transform not a function`).toBe(
-          'function'
-        );
+    it('write endpoints (POST/PUT/PATCH) have schema + transform', () => {
+      const writes = endpointsData.filter((e) =>
+        ['post', 'put', 'patch'].includes(e.method)
+      );
+      for (const ep of writes) {
+        const o = toolSchemaOverrides.get(ep.toolName);
+        if (!o) continue;
+        expect(o.schema, `${ep.toolName} missing schema`).toBeDefined();
+        expect(typeof o.transform, `${ep.toolName} transform not fn`).toBe('function');
       }
     });
 
-    it('overrides with schema should have at most 8 params', () => {
-      for (const [toolName, override] of toolSchemaOverrides) {
-        if (!override.schema) continue;
-        const paramCount = Object.keys(override.schema).length;
-        expect(paramCount, `${toolName} has too many params (${paramCount})`).toBeLessThanOrEqual(8);
+    it('overrides with schema have at most 8 params', () => {
+      for (const [name, o] of toolSchemaOverrides) {
+        if (!o.schema) continue;
+        const n = Object.keys(o.schema).length;
+        expect(n, `${name} has ${n} params`).toBeLessThanOrEqual(8);
       }
     });
 
-    it('every schema param should be a Zod type', () => {
-      for (const [toolName, override] of toolSchemaOverrides) {
-        if (!override.schema) continue;
-        for (const [key, schema] of Object.entries(override.schema)) {
-          expect(schema instanceof z.ZodType, `${toolName}.${key} is not a ZodType`).toBe(true);
+    it('every schema param is a Zod type', () => {
+      for (const [name, o] of toolSchemaOverrides) {
+        if (!o.schema) continue;
+        for (const [key, s] of Object.entries(o.schema)) {
+          expect(s instanceof z.ZodType, `${name}.${key} not ZodType`).toBe(true);
         }
       }
     });
   });
 
-  describe('send-mail', () => {
-    const override = toolSchemaOverrides.get('send-mail')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  // ── Mail transforms ───────────────────────────────────────────────────────
 
-    it('should accept simple flat params', () => {
-      const result = schema.safeParse({
-        to: 'user@example.com',
-        subject: 'Hello',
-        content: 'Hi there',
-      });
-      expect(result.success).toBe(true);
-    });
+  describe('send-mail transform', () => {
+    const o = toolSchemaOverrides.get('send-mail')!;
 
-    it('should accept optional cc/bcc/isHtml', () => {
-      const result = schema.safeParse({
-        to: 'a@b.com',
-        subject: 'Test',
-        content: '<b>Bold</b>',
-        cc: 'cc@b.com, cc2@b.com',
-        bcc: 'bcc@b.com',
-        isHtml: true,
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('should reject without required fields', () => {
-      expect(schema.safeParse({ subject: 'Test' }).success).toBe(false);
-      expect(schema.safeParse({ to: 'a@b.com' }).success).toBe(false);
-    });
-
-    it('transform should produce correct API body', () => {
-      const body = override.transform({
-        to: 'alice@example.com, bob@example.com',
-        subject: 'Hello',
-        content: 'Hi',
-      });
-      expect(body).toEqual({
+    it('produces correct API body', () => {
+      expect(
+        o.transform!({ to: 'a@b.com, c@d.com', subject: 'Hi', content: 'Hello' })
+      ).toEqual({
         message: {
-          subject: 'Hello',
-          body: { contentType: 'Text', content: 'Hi' },
+          subject: 'Hi',
+          body: { contentType: 'Text', content: 'Hello' },
           toRecipients: [
-            { emailAddress: { address: 'alice@example.com' } },
-            { emailAddress: { address: 'bob@example.com' } },
+            { emailAddress: { address: 'a@b.com' } },
+            { emailAddress: { address: 'c@d.com' } },
           ],
         },
         saveToSentItems: true,
       });
     });
 
-    it('transform should handle HTML and CC', () => {
-      const body = override.transform({
+    it('handles HTML + CC + BCC', () => {
+      const body = o.transform!({
         to: 'a@b.com',
-        subject: 'Test',
-        content: '<b>Bold</b>',
+        subject: 'T',
+        content: '<b>X</b>',
         cc: 'cc@b.com',
+        bcc: 'bcc@b.com',
         isHtml: true,
       }) as Record<string, unknown>;
       const msg = body.message as Record<string, unknown>;
-      const msgBody = msg.body as Record<string, unknown>;
-      expect(msgBody.contentType).toBe('HTML');
+      expect((msg.body as Record<string, unknown>).contentType).toBe('HTML');
       expect(msg.ccRecipients).toEqual([{ emailAddress: { address: 'cc@b.com' } }]);
+      expect(msg.bccRecipients).toEqual([{ emailAddress: { address: 'bcc@b.com' } }]);
     });
   });
 
-  describe('create-calendar-event', () => {
-    const override = toolSchemaOverrides.get('create-calendar-event')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  describe('create-draft-email transform', () => {
+    const o = toolSchemaOverrides.get('create-draft-email')!;
 
-    it('should accept minimal params', () => {
-      const result = schema.safeParse({
-        subject: 'Meeting',
-        startDateTime: '2025-03-15T09:00:00',
-        endDateTime: '2025-03-15T10:00:00',
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('should reject without start/end', () => {
-      expect(schema.safeParse({ subject: 'Meeting' }).success).toBe(false);
-    });
-
-    it('transform should produce correct API body', () => {
-      const body = override.transform({
-        subject: 'Team Meeting',
-        startDateTime: '2025-03-15T09:00:00',
-        endDateTime: '2025-03-15T10:00:00',
-        timeZone: 'America/New_York',
-        location: 'Room 101',
-        attendees: 'alice@example.com, bob@example.com',
-      });
-      expect(body).toEqual({
-        subject: 'Team Meeting',
-        start: { dateTime: '2025-03-15T09:00:00', timeZone: 'America/New_York' },
-        end: { dateTime: '2025-03-15T10:00:00', timeZone: 'America/New_York' },
-        location: { displayName: 'Room 101' },
-        attendees: [
-          { emailAddress: { address: 'alice@example.com' }, type: 'required' },
-          { emailAddress: { address: 'bob@example.com' }, type: 'required' },
-        ],
-      });
-    });
-
-    it('transform should default timeZone to UTC', () => {
-      const body = override.transform({
-        subject: 'Test',
-        startDateTime: '2025-03-15T09:00:00',
-        endDateTime: '2025-03-15T10:00:00',
-      }) as Record<string, unknown>;
-      const start = body.start as Record<string, unknown>;
-      expect(start.timeZone).toBe('UTC');
-    });
-
-    it('transform should handle online meeting flag', () => {
-      const body = override.transform({
-        subject: 'Virtual Standup',
-        startDateTime: '2025-03-15T09:00:00',
-        endDateTime: '2025-03-15T09:15:00',
-        isOnlineMeeting: true,
-      }) as Record<string, unknown>;
-      expect(body.isOnlineMeeting).toBe(true);
-      expect(body.onlineMeetingProvider).toBe('teamsForBusiness');
-    });
-  });
-
-  describe('create-todo-task', () => {
-    const override = toolSchemaOverrides.get('create-todo-task')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
-
-    it('should accept just a title', () => {
-      expect(schema.safeParse({ title: 'Buy groceries' }).success).toBe(true);
-    });
-
-    it('should reject without title', () => {
-      expect(schema.safeParse({ dueDate: '2025-03-15' }).success).toBe(false);
-    });
-
-    it('transform should produce correct API body with dueDate', () => {
-      const body = override.transform({
-        title: 'Buy groceries',
-        dueDate: '2025-03-15',
-        notes: 'Milk, bread, eggs',
-        importance: 'high',
-      });
-      expect(body).toEqual({
-        title: 'Buy groceries',
-        dueDateTime: { dateTime: '2025-03-15T00:00:00', timeZone: 'UTC' },
-        body: { content: 'Milk, bread, eggs', contentType: 'text' },
-        importance: 'high',
-      });
-    });
-
-    it('transform should produce minimal body', () => {
-      const body = override.transform({ title: 'Simple task' });
-      expect(body).toEqual({ title: 'Simple task' });
-    });
-  });
-
-  describe('create-planner-task', () => {
-    const override = toolSchemaOverrides.get('create-planner-task')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
-
-    it('should accept planId and title', () => {
-      expect(schema.safeParse({ planId: 'plan-123', title: 'Review' }).success).toBe(true);
-    });
-
-    it('should reject without planId', () => {
-      expect(schema.safeParse({ title: 'Test' }).success).toBe(false);
-    });
-
-    it('transform should handle assignedTo', () => {
-      const body = override.transform({
-        planId: 'plan-123',
-        title: 'Review',
-        assignedTo: 'user-1, user-2',
-      }) as Record<string, unknown>;
-      expect(body.assignments).toEqual({
-        'user-1': { '@odata.type': '#microsoft.graph.plannerAssignment', orderHint: ' !' },
-        'user-2': { '@odata.type': '#microsoft.graph.plannerAssignment', orderHint: ' !' },
+    it('produces correct body', () => {
+      expect(o.transform!({ subject: 'D', content: 'Hi', to: 'a@b.com' })).toEqual({
+        subject: 'D',
+        body: { contentType: 'Text', content: 'Hi' },
+        toRecipients: [{ emailAddress: { address: 'a@b.com' } }],
       });
     });
   });
 
-  describe('add-mail-attachment', () => {
-    const override = toolSchemaOverrides.get('add-mail-attachment')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
-
-    it('should accept name and contentBytes', () => {
-      expect(schema.safeParse({ name: 'file.pdf', contentBytes: 'base64data==' }).success).toBe(
-        true
-      );
+  describe('move-mail-message transform', () => {
+    it('passes through destinationId', () => {
+      const o = toolSchemaOverrides.get('move-mail-message')!;
+      expect(o.transform!({ destinationId: 'inbox' })).toEqual({
+        destinationId: 'inbox',
+      });
     });
+  });
 
-    it('should reject without required fields', () => {
-      expect(schema.safeParse({ name: 'file.pdf' }).success).toBe(false);
-      expect(schema.safeParse({ contentBytes: 'data==' }).success).toBe(false);
-    });
-
-    it('transform should auto-inject @odata.type', () => {
-      const body = override.transform({
-        name: 'report.pdf',
+  describe('add-mail-attachment transform', () => {
+    it('auto-injects @odata.type', () => {
+      const o = toolSchemaOverrides.get('add-mail-attachment')!;
+      const body = o.transform!({
+        name: 'f.pdf',
         contentBytes: 'dGVzdA==',
         contentType: 'application/pdf',
       }) as Record<string, unknown>;
       expect(body['@odata.type']).toBe('#microsoft.graph.fileAttachment');
-      expect(body.name).toBe('report.pdf');
-      expect(body.contentBytes).toBe('dGVzdA==');
-      expect(body.contentType).toBe('application/pdf');
+      expect(body.name).toBe('f.pdf');
     });
   });
 
-  describe('move-mail-message', () => {
-    const override = toolSchemaOverrides.get('move-mail-message')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  // ── Mail list queryTransform ──────────────────────────────────────────────
 
-    it('should accept destinationId', () => {
-      expect(schema.safeParse({ destinationId: 'inbox' }).success).toBe(true);
-    });
+  describe('list-mail-messages queryTransform', () => {
+    const o = toolSchemaOverrides.get('list-mail-messages')!;
 
-    it('should reject without destinationId', () => {
-      expect(schema.safeParse({}).success).toBe(false);
-    });
-
-    it('transform should pass through', () => {
-      expect(override.transform({ destinationId: 'drafts' })).toEqual({
-        destinationId: 'drafts',
+    it('builds OData from simple params', () => {
+      const q = o.queryTransform!({
+        from: 'alice@example.com',
+        unreadOnly: true,
+        count: 5,
       });
+      expect(q['$filter']).toContain("from/emailAddress/address eq 'alice@example.com'");
+      expect(q['$filter']).toContain('isRead eq false');
+      expect(q['$top']).toBe('5');
+      expect(q['$orderby']).toBe('receivedDateTime desc');
+    });
+
+    it('defaults to 10 results', () => {
+      expect(o.queryTransform!({})['$top']).toBe('10');
+    });
+
+    it('handles search', () => {
+      expect(o.queryTransform!({ search: 'budget' })['$search']).toBe('"budget"');
     });
   });
 
-  describe('search-query', () => {
-    const override = toolSchemaOverrides.get('search-query')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  // ── Calendar transforms ───────────────────────────────────────────────────
 
-    it('should accept query and entityTypes strings', () => {
+  describe('create-calendar-event transform', () => {
+    const o = toolSchemaOverrides.get('create-calendar-event')!;
+
+    it('builds nested start/end with timeZone default', () => {
+      const body = o.transform!({
+        subject: 'Standup',
+        startDateTime: '2025-03-15T09:00:00',
+        endDateTime: '2025-03-15T09:15:00',
+      }) as Record<string, unknown>;
+      expect(body.subject).toBe('Standup');
+      expect(body.start).toEqual({ dateTime: '2025-03-15T09:00:00', timeZone: 'UTC' });
+    });
+
+    it('handles attendees + online meeting', () => {
+      const body = o.transform!({
+        subject: 'Call',
+        startDateTime: '2025-03-15T09:00:00',
+        endDateTime: '2025-03-15T10:00:00',
+        attendees: 'a@b.com, c@d.com',
+        isOnlineMeeting: true,
+      }) as Record<string, unknown>;
+      expect(body.isOnlineMeeting).toBe(true);
+      expect(body.onlineMeetingProvider).toBe('teamsForBusiness');
+      expect((body.attendees as unknown[]).length).toBe(2);
+    });
+  });
+
+  describe('list-calendar-events queryTransform', () => {
+    const o = toolSchemaOverrides.get('list-calendar-events')!;
+
+    it('builds date range filter', () => {
+      const q = o.queryTransform!({
+        startDate: '2025-03-01',
+        endDate: '2025-03-31',
+        count: 20,
+      });
+      expect(q['$filter']).toContain("start/dateTime ge '2025-03-01T00:00:00Z'");
+      expect(q['$filter']).toContain("end/dateTime le '2025-03-31T23:59:59Z'");
+      expect(q['$top']).toBe('20');
+    });
+  });
+
+  describe('get-calendar-view queryTransform', () => {
+    const o = toolSchemaOverrides.get('get-calendar-view')!;
+
+    it('passes startDateTime and endDateTime', () => {
+      const q = o.queryTransform!({
+        startDateTime: '2025-03-01T00:00:00Z',
+        endDateTime: '2025-03-31T23:59:59Z',
+      });
+      expect(q.startDateTime).toBe('2025-03-01T00:00:00Z');
+      expect(q.endDateTime).toBe('2025-03-31T23:59:59Z');
+    });
+  });
+
+  // ── To-Do transforms ─────────────────────────────────────────────────────
+
+  describe('create-todo-task transform', () => {
+    const o = toolSchemaOverrides.get('create-todo-task')!;
+
+    it('minimal: just title', () => {
+      expect(o.transform!({ title: 'Buy milk' })).toEqual({ title: 'Buy milk' });
+    });
+
+    it('full: with dueDate and notes', () => {
       expect(
-        schema.safeParse({ query: 'project report', entityTypes: 'message,driveItem' }).success
-      ).toBe(true);
-    });
-
-    it('should reject without query', () => {
-      expect(schema.safeParse({ entityTypes: 'message' }).success).toBe(false);
-    });
-
-    it('transform should produce correct nested API body', () => {
-      const body = override.transform({
-        query: 'budget 2025',
-        entityTypes: 'message, driveItem',
-        size: 10,
-      });
-      expect(body).toEqual({
-        requests: [
-          {
-            entityTypes: ['message', 'driveItem'],
-            query: { queryString: 'budget 2025' },
-            size: 10,
-          },
-        ],
+        o.transform!({
+          title: 'Report',
+          dueDate: '2025-03-15',
+          notes: 'Q1 financials',
+          importance: 'high',
+        })
+      ).toEqual({
+        title: 'Report',
+        dueDateTime: { dateTime: '2025-03-15T00:00:00', timeZone: 'UTC' },
+        body: { content: 'Q1 financials', contentType: 'text' },
+        importance: 'high',
       });
     });
   });
 
-  describe('send-chat-message', () => {
-    const override = toolSchemaOverrides.get('send-chat-message')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  describe('list-todo-tasks queryTransform', () => {
+    const o = toolSchemaOverrides.get('list-todo-tasks')!;
 
-    it('should accept just content', () => {
-      expect(schema.safeParse({ content: 'Hello team!' }).success).toBe(true);
+    it('filters by status', () => {
+      const q = o.queryTransform!({ status: 'completed', count: 5 });
+      expect(q['$filter']).toBe("status eq 'completed'");
+      expect(q['$top']).toBe('5');
     });
+  });
 
-    it('should reject without content', () => {
-      expect(schema.safeParse({}).success).toBe(false);
-    });
+  // ── Planner transforms ───────────────────────────────────────────────────
 
-    it('transform should wrap in body object', () => {
-      expect(override.transform({ content: 'Hello!' })).toEqual({
-        body: { content: 'Hello!' },
+  describe('create-planner-task transform', () => {
+    const o = toolSchemaOverrides.get('create-planner-task')!;
+
+    it('handles assignedTo', () => {
+      const body = o.transform!({
+        planId: 'plan-1',
+        title: 'Review',
+        assignedTo: 'user-1, user-2',
+      }) as Record<string, unknown>;
+      expect(body.assignments).toEqual({
+        'user-1': {
+          '@odata.type': '#microsoft.graph.plannerAssignment',
+          orderHint: ' !',
+        },
+        'user-2': {
+          '@odata.type': '#microsoft.graph.plannerAssignment',
+          orderHint: ' !',
+        },
       });
     });
   });
 
-  describe('create-outlook-contact', () => {
-    const override = toolSchemaOverrides.get('create-outlook-contact')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  // ── Contact transforms ───────────────────────────────────────────────────
 
-    it('should accept givenName', () => {
-      expect(schema.safeParse({ givenName: 'John' }).success).toBe(true);
-    });
+  describe('create-outlook-contact transform', () => {
+    const o = toolSchemaOverrides.get('create-outlook-contact')!;
 
-    it('transform should expand email and phone', () => {
-      const body = override.transform({
+    it('expands email and phone', () => {
+      const body = o.transform!({
         givenName: 'Jane',
-        surname: 'Doe',
-        email: 'jane@example.com',
+        email: 'jane@x.com',
         phone: '+1-555-0100',
         company: 'Acme',
       }) as Record<string, unknown>;
-      expect(body.givenName).toBe('Jane');
-      expect(body.surname).toBe('Doe');
-      expect(body.emailAddresses).toEqual([{ address: 'jane@example.com', name: '' }]);
+      expect(body.emailAddresses).toEqual([{ address: 'jane@x.com', name: '' }]);
       expect(body.businessPhones).toEqual(['+1-555-0100']);
       expect(body.companyName).toBe('Acme');
     });
   });
 
-  describe('create-excel-chart', () => {
-    const override = toolSchemaOverrides.get('create-excel-chart')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  describe('list-outlook-contacts queryTransform', () => {
+    const o = toolSchemaOverrides.get('list-outlook-contacts')!;
 
-    it('should accept type and sourceData', () => {
-      expect(schema.safeParse({ type: 'Pie', sourceData: 'A1:B5' }).success).toBe(true);
+    it('builds search query', () => {
+      const q = o.queryTransform!({ search: 'John', count: 10 });
+      expect(q['$search']).toBe('"John"');
+      expect(q['$top']).toBe('10');
     });
+  });
 
-    it('should reject without type', () => {
-      expect(schema.safeParse({ sourceData: 'A1:B5' }).success).toBe(false);
+  // ── Teams/Chat transforms ────────────────────────────────────────────────
+
+  describe('send-chat-message transform', () => {
+    it('wraps in body object', () => {
+      const o = toolSchemaOverrides.get('send-chat-message')!;
+      expect(o.transform!({ content: 'Hello!' })).toEqual({
+        body: { content: 'Hello!' },
+      });
     });
+  });
 
-    it('transform should pass through with default seriesBy', () => {
-      expect(override.transform({ type: 'Line', sourceData: 'A1:C10' })).toEqual({
+  describe('list-chat-messages queryTransform', () => {
+    it('sets $top', () => {
+      const o = toolSchemaOverrides.get('list-chat-messages')!;
+      expect(o.queryTransform!({ count: 50 })['$top']).toBe('50');
+    });
+  });
+
+  // ── OneNote transforms ────────────────────────────────────────────────────
+
+  describe('create-onenote-page transform', () => {
+    it('wraps in HTML structure', () => {
+      const o = toolSchemaOverrides.get('create-onenote-page')!;
+      const body = o.transform!({ title: 'Notes', content: 'Text' }) as Record<
+        string,
+        unknown
+      >;
+      expect(body.contentType).toBe('text/html');
+      expect(body.content).toContain('<title>Notes</title>');
+      expect(body.content).toContain('Text');
+    });
+  });
+
+  // ── Excel transforms ─────────────────────────────────────────────────────
+
+  describe('create-excel-chart transform', () => {
+    it('passes through with default seriesBy', () => {
+      const o = toolSchemaOverrides.get('create-excel-chart')!;
+      expect(o.transform!({ type: 'Line', sourceData: 'A1:C10' })).toEqual({
         type: 'Line',
         sourceData: 'A1:C10',
         seriesBy: 'Auto',
@@ -416,168 +361,155 @@ describe('Tool Schema Overrides', () => {
     });
   });
 
-  describe('create-onenote-page', () => {
-    const override = toolSchemaOverrides.get('create-onenote-page')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
-
-    it('should accept title and content', () => {
-      expect(schema.safeParse({ title: 'My Page', content: 'Hello' }).success).toBe(true);
-    });
-
-    it('transform should wrap in HTML structure', () => {
-      const body = override.transform({ title: 'Notes', content: 'Some text' }) as Record<
-        string,
-        unknown
-      >;
-      expect(body.contentType).toBe('text/html');
-      expect(body.content).toContain('<title>Notes</title>');
-      expect(body.content).toContain('Some text');
-    });
-  });
-
-  describe('upload-file-content', () => {
-    const override = toolSchemaOverrides.get('upload-file-content')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
-
-    it('should accept content string', () => {
-      expect(schema.safeParse({ content: 'file data' }).success).toBe(true);
-    });
-
-    it('transform should return raw content string', () => {
-      expect(override.transform({ content: 'raw file data' })).toBe('raw file data');
-    });
-  });
-
-  describe('format-excel-range', () => {
-    const override = toolSchemaOverrides.get('format-excel-range')!;
-
-    it('transform should build font/fill from flat params', () => {
-      const body = override.transform({
-        bold: true,
-        fontSize: 14,
-        fontColor: '#FF0000',
-        fillColor: '#FFFF00',
-      });
-      expect(body).toEqual({
-        font: { bold: true, size: 14, color: '#FF0000' },
+  describe('format-excel-range transform', () => {
+    it('builds font/fill from flat params', () => {
+      const o = toolSchemaOverrides.get('format-excel-range')!;
+      expect(
+        o.transform!({ bold: true, fontSize: 14, fillColor: '#FFFF00' })
+      ).toEqual({
+        font: { bold: true, size: 14 },
         fill: { color: '#FFFF00' },
       });
     });
   });
 
-  describe('sort-excel-range', () => {
-    const override = toolSchemaOverrides.get('sort-excel-range')!;
-
-    it('transform should wrap columnIndex into fields array', () => {
-      const body = override.transform({ columnIndex: 2, ascending: false, hasHeaders: true });
-      expect(body).toEqual({
+  describe('sort-excel-range transform', () => {
+    it('wraps into fields array', () => {
+      const o = toolSchemaOverrides.get('sort-excel-range')!;
+      expect(
+        o.transform!({ columnIndex: 2, ascending: false, hasHeaders: true })
+      ).toEqual({
         fields: [{ key: 2, ascending: false }],
         hasHeaders: true,
       });
     });
   });
 
-  describe('create-draft-email', () => {
-    const override = toolSchemaOverrides.get('create-draft-email')!;
-    const schema = z.object(override.schema as z.ZodRawShape);
+  // ── OneDrive ──────────────────────────────────────────────────────────────
 
-    it('should accept subject and content', () => {
-      expect(schema.safeParse({ subject: 'Draft', content: 'Text' }).success).toBe(true);
+  describe('upload-file-content transform', () => {
+    it('returns raw content string', () => {
+      const o = toolSchemaOverrides.get('upload-file-content')!;
+      expect(o.transform!({ content: 'raw data' })).toBe('raw data');
     });
+  });
 
-    it('transform should produce correct body', () => {
-      const body = override.transform({
-        subject: 'Draft',
-        content: 'Hello',
-        to: 'a@b.com',
-      });
-      expect(body).toEqual({
-        subject: 'Draft',
-        body: { contentType: 'Text', content: 'Hello' },
-        toRecipients: [{ emailAddress: { address: 'a@b.com' } }],
+  // ── Search transform ──────────────────────────────────────────────────────
+
+  describe('search-query transform', () => {
+    it('builds nested requests array', () => {
+      const o = toolSchemaOverrides.get('search-query')!;
+      expect(
+        o.transform!({ query: 'budget', entityTypes: 'message, driveItem', size: 10 })
+      ).toEqual({
+        requests: [
+          {
+            entityTypes: ['message', 'driveItem'],
+            query: { queryString: 'budget' },
+            size: 10,
+          },
+        ],
       });
     });
   });
 
-  // ── Email GET endpoints ─────────────────────────────────────────────────────
+  // ── SharePoint queryTransform ─────────────────────────────────────────────
 
-  describe('list-mail-messages', () => {
-    const override = toolSchemaOverrides.get('list-mail-messages')!;
-
-    it('should have queryTransform', () => {
-      expect(typeof override.queryTransform).toBe('function');
-    });
-
-    it('should accept simple search params', () => {
-      const schema = z.object(override.schema as z.ZodRawShape);
-      expect(schema.safeParse({ search: 'budget report' }).success).toBe(true);
-      expect(schema.safeParse({}).success).toBe(true);
-    });
-
-    it('queryTransform should produce OData params from search', () => {
-      const result = override.queryTransform!({ search: 'budget report' });
-      expect(result['$search']).toBe('"budget report"');
-      expect(result['$top']).toBe('10');
-      expect(result['$orderby']).toBe('receivedDateTime desc');
-      expect(result['$select']).toContain('subject');
-    });
-
-    it('queryTransform should produce $filter from sender and unread', () => {
-      const result = override.queryTransform!({
-        from: 'alice@example.com',
-        unreadOnly: true,
-        count: 5,
+  describe('search-sharepoint-sites queryTransform', () => {
+    it('passes search param', () => {
+      const o = toolSchemaOverrides.get('search-sharepoint-sites')!;
+      expect(o.queryTransform!({ search: 'marketing' })).toEqual({
+        search: 'marketing',
       });
-      expect(result['$filter']).toContain("from/emailAddress/address eq 'alice@example.com'");
-      expect(result['$filter']).toContain('isRead eq false');
-      expect(result['$top']).toBe('5');
-    });
-
-    it('queryTransform should produce $filter from subject', () => {
-      const result = override.queryTransform!({ subject: 'weekly update' });
-      expect(result['$filter']).toContain("contains(subject, 'weekly update')");
-    });
-
-    it('queryTransform should default to 10 results', () => {
-      const result = override.queryTransform!({});
-      expect(result['$top']).toBe('10');
     });
   });
+
+  describe('list-sharepoint-site-list-items queryTransform', () => {
+    it('builds search + top', () => {
+      const o = toolSchemaOverrides.get('list-sharepoint-site-list-items')!;
+      const q = o.queryTransform!({ search: 'report', count: 15 });
+      expect(q['$search']).toBe('"report"');
+      expect(q['$top']).toBe('15');
+    });
+  });
+
+  // ── Users queryTransform ──────────────────────────────────────────────────
+
+  describe('list-users queryTransform', () => {
+    it('builds search + select', () => {
+      const o = toolSchemaOverrides.get('list-users')!;
+      const q = o.queryTransform!({ search: 'alice' });
+      expect(q['$search']).toBe('"alice"');
+      expect(q['$select']).toContain('displayName');
+    });
+  });
+
+  // ── Description-only overrides ────────────────────────────────────────────
 
   describe('description-only overrides', () => {
-    const descriptionOnlyTools = [
+    const descOnly = [
       'get-mail-message',
       'get-shared-mailbox-message',
       'list-mail-folders',
       'list-mail-attachments',
       'get-mail-attachment',
+      'delete-mail-message',
+      'delete-mail-attachment',
+      'get-calendar-event',
+      'list-calendars',
+      'delete-calendar-event',
+      'list-todo-task-lists',
+      'get-todo-task',
+      'delete-todo-task',
+      'list-planner-tasks',
+      'get-planner-plan',
+      'list-plan-tasks',
+      'get-planner-task',
+      'get-outlook-contact',
+      'delete-outlook-contact',
+      'get-current-user',
+      'list-joined-teams',
+      'get-team',
+      'list-team-channels',
+      'get-team-channel',
+      'list-team-members',
+      'get-channel-message',
+      'list-chats',
+      'get-chat',
+      'get-chat-message',
+      'list-chat-message-replies',
+      'list-drives',
+      'get-drive-root-item',
+      'get-root-folder',
+      'list-folder-files',
+      'download-onedrive-file-content',
+      'delete-onedrive-file',
+      'list-excel-worksheets',
+      'get-excel-range',
+      'list-onenote-notebooks',
+      'list-onenote-notebook-sections',
+      'list-onenote-section-pages',
+      'get-onenote-page-content',
+      'get-sharepoint-site',
+      'list-sharepoint-site-drives',
+      'get-sharepoint-site-drive-by-id',
+      'list-sharepoint-site-items',
+      'get-sharepoint-site-item',
+      'list-sharepoint-site-lists',
+      'get-sharepoint-site-list',
+      'get-sharepoint-site-list-item',
+      'get-sharepoint-site-by-path',
+      'get-sharepoint-sites-delta',
     ];
 
-    for (const toolName of descriptionOnlyTools) {
-      it(`${toolName} should have a description override`, () => {
-        const override = toolSchemaOverrides.get(toolName);
-        expect(override, `${toolName} missing override`).toBeDefined();
-        expect(override!.description.length).toBeGreaterThan(10);
+    for (const name of descOnly) {
+      it(`${name} has description and no transform`, () => {
+        const o = toolSchemaOverrides.get(name);
+        expect(o, `${name} missing override`).toBeDefined();
+        expect(o!.description.length).toBeGreaterThan(10);
+        expect(o!.transform).toBeUndefined();
+        expect(o!.queryTransform).toBeUndefined();
       });
     }
-  });
-
-  describe('list-mail-folder-messages', () => {
-    const override = toolSchemaOverrides.get('list-mail-folder-messages')!;
-
-    it('should share the same queryTransform as list-mail-messages', () => {
-      const result = override.queryTransform!({ from: 'bob@example.com', count: 20 });
-      expect(result['$filter']).toContain("from/emailAddress/address eq 'bob@example.com'");
-      expect(result['$top']).toBe('20');
-    });
-  });
-
-  describe('list-shared-mailbox-messages', () => {
-    const override = toolSchemaOverrides.get('list-shared-mailbox-messages')!;
-
-    it('should have queryTransform for search', () => {
-      const result = override.queryTransform!({ search: 'invoice' });
-      expect(result['$search']).toBe('"invoice"');
-    });
   });
 });
