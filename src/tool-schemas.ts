@@ -76,7 +76,7 @@ toolSchemaOverrides.set('list-mail-messages', {
   },
   queryTransform: buildMailQueryParams,
   pathTransform: (_base, p) => {
-    const root = p.userId ? `/users/${p.userId}` : '/me';
+    const root = p.userId && p.userId !== "" ? `/users/${p.userId}` : '/me';
     if (p.folderId) return `${root}/mailFolders/${p.folderId}/messages`;
     return `${root}/messages`;
   },
