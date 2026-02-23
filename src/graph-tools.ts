@@ -126,14 +126,24 @@ export function registerGraphTools(
     }
 
     const override = toolSchemaOverrides.get(tool.alias);
-    if (override) {
-      const bodyParamNames: string[] = (tool.parameters || [])
-        .filter((p: { type: string }) => p.type === 'Body')
-        .map((p: { name: string }) => p.name);
-      for (const name of bodyParamNames) {
-        delete paramSchema[name];
+    if (override && override.schema) {
+      if (override.transform) {
+        const bodyParamNames: string[] = (tool.parameters || [])
+          .filter((p: { type: string }) => p.type === 'Body')
+          .map((p: { name: string }) => p.name);
+        for (const name of bodyParamNames) {
+          delete paramSchema[name];
+        }
+        delete paramSchema['body'];
       }
-      delete paramSchema['body'];
+      if (override.queryTransform) {
+        const queryParamNames: string[] = (tool.parameters || [])
+          .filter((p: { type: string }) => p.type === 'Query')
+          .map((p: { name: string }) => p.name);
+        for (const name of queryParamNames) {
+          delete paramSchema[name];
+        }
+      }
 
       for (const [key, schema] of Object.entries(override.schema)) {
         paramSchema[key] = schema;
@@ -159,16 +169,24 @@ export function registerGraphTools(
           logger.info(`params: ${JSON.stringify(params)}`);
 
           const parameterDefinitions = tool.parameters || [];
-          const overrideParamNames = override ? new Set(Object.keys(override.schema)) : null;
+          const overrideParamNames = override?.schema
+            ? new Set(Object.keys(override.schema))
+            : null;
 
           let path = tool.path;
           const queryParams: Record<string, string> = {};
           const headers: Record<string, string> = {};
           let body: unknown = null;
 
-          if (override) {
+          if (override?.transform) {
             body = override.transform(params as Record<string, unknown>);
             logger.info(`Transformed body via override: ${JSON.stringify(body)}`);
+          }
+
+          if (override?.queryTransform) {
+            const transformedQuery = override.queryTransform(params as Record<string, unknown>);
+            Object.assign(queryParams, transformedQuery);
+            logger.info(`Transformed query via override: ${JSON.stringify(transformedQuery)}`);
           }
 
           for (let [paramName, paramValue] of Object.entries(params)) {

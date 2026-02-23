@@ -2,8 +2,9 @@ import { z } from 'zod';
 
 interface ToolSchemaOverride {
   description: string;
-  schema: Record<string, z.ZodType<unknown>>;
-  transform: (params: Record<string, unknown>) => unknown;
+  schema?: Record<string, z.ZodType<unknown>>;
+  transform?: (params: Record<string, unknown>) => unknown;
+  queryTransform?: (params: Record<string, unknown>) => Record<string, string>;
 }
 
 function parseRecipients(value: unknown): { emailAddress: { address: string; name?: string } }[] {
@@ -15,9 +16,85 @@ function parseRecipients(value: unknown): { emailAddress: { address: string; nam
     .map((addr) => ({ emailAddress: { address: addr } }));
 }
 
+const DEFAULT_MAIL_SELECT =
+  'id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,hasAttachments';
+
+function buildMailQueryParams(p: Record<string, unknown>): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (p.search) params['$search'] = `"${p.search}"`;
+  const filters: string[] = [];
+  if (p.from) filters.push(`from/emailAddress/address eq '${p.from}'`);
+  if (p.subject) filters.push(`contains(subject, '${p.subject}')`);
+  if (p.unreadOnly) filters.push('isRead eq false');
+  if (filters.length > 0) params['$filter'] = filters.join(' and ');
+  params['$top'] = String(p.count || 10);
+  params['$orderby'] = 'receivedDateTime desc';
+  params['$select'] = DEFAULT_MAIL_SELECT;
+  return params;
+}
+
 const toolSchemaOverrides = new Map<string, ToolSchemaOverride>();
 
-// ── Mail ────────────────────────────────────────────────────────────────────────
+// ── Mail (Read) ─────────────────────────────────────────────────────────────────
+
+const mailListSchema: Record<string, z.ZodType<unknown>> = {
+  search: z.string().optional().describe('Search text to find in emails'),
+  from: z.string().optional().describe('Filter by sender email address'),
+  subject: z.string().optional().describe('Filter by subject text'),
+  unreadOnly: z.boolean().optional().describe('Only return unread emails'),
+  count: z.number().optional().describe('Number of emails to return (default: 10)'),
+};
+
+toolSchemaOverrides.set('list-mail-messages', {
+  description: 'List emails from your mailbox. Can search and filter by sender, subject, or read status.',
+  schema: mailListSchema,
+  queryTransform: buildMailQueryParams,
+});
+
+toolSchemaOverrides.set('list-mail-folder-messages', {
+  description:
+    'List emails in a specific mail folder. Use list-mail-folders first to get folder IDs.',
+  schema: mailListSchema,
+  queryTransform: buildMailQueryParams,
+});
+
+toolSchemaOverrides.set('list-shared-mailbox-messages', {
+  description:
+    'List emails from a shared mailbox. Provide the user-id of the shared mailbox owner.',
+  schema: mailListSchema,
+  queryTransform: buildMailQueryParams,
+});
+
+toolSchemaOverrides.set('list-shared-mailbox-folder-messages', {
+  description:
+    'List emails in a specific folder of a shared mailbox. Provide user-id and mailFolder-id.',
+  schema: mailListSchema,
+  queryTransform: buildMailQueryParams,
+});
+
+toolSchemaOverrides.set('get-mail-message', {
+  description:
+    'Get a specific email by its message ID. Returns full email details including body, recipients, and attachments.',
+});
+
+toolSchemaOverrides.set('get-shared-mailbox-message', {
+  description:
+    'Get a specific email from a shared mailbox by user-id and message-id.',
+});
+
+toolSchemaOverrides.set('list-mail-folders', {
+  description: 'List your mail folders (inbox, sent items, drafts, etc.). Returns folder names and IDs.',
+});
+
+toolSchemaOverrides.set('list-mail-attachments', {
+  description: 'List all attachments on a specific email. Provide the message-id.',
+});
+
+toolSchemaOverrides.set('get-mail-attachment', {
+  description: 'Get a specific attachment from an email. Provide message-id and attachment-id.',
+});
+
+// ── Mail (Write) ────────────────────────────────────────────────────────────────
 
 toolSchemaOverrides.set('send-mail', {
   description: 'Send an email. Provide recipients, subject, and content.',

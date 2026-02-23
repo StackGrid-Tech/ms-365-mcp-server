@@ -15,6 +15,13 @@ const writeEndpoints = endpointsData.filter((e) =>
   ['post', 'put', 'patch'].includes(e.method.toLowerCase())
 );
 
+const emailGetEndpoints = endpointsData.filter(
+  (e) =>
+    e.method === 'get' &&
+    (e.toolName.includes('mail') || e.toolName.includes('message'))
+    && !e.toolName.includes('chat') && !e.toolName.includes('channel')
+);
+
 describe('Tool Schema Overrides', () => {
   describe('coverage', () => {
     it('should have overrides for all POST/PUT/PATCH endpoints', () => {
@@ -28,28 +35,47 @@ describe('Tool Schema Overrides', () => {
       ).toHaveLength(0);
     });
 
-    it('should not have overrides for DELETE or GET endpoints', () => {
-      const readOnlyEndpoints = endpointsData.filter(
-        (e) => e.method === 'delete' || e.method === 'get'
-      );
-      for (const endpoint of readOnlyEndpoints) {
+    it('should have overrides for all email GET endpoints', () => {
+      const missingOverrides = emailGetEndpoints
+        .filter((e) => !toolSchemaOverrides.has(e.toolName))
+        .map((e) => `GET ${e.pathPattern} (${e.toolName})`);
+
+      expect(
+        missingOverrides,
+        `Missing email GET overrides for:\n  ${missingOverrides.join('\n  ')}`
+      ).toHaveLength(0);
+    });
+
+    it('should not have overrides for DELETE endpoints', () => {
+      const deleteEndpoints = endpointsData.filter((e) => e.method === 'delete');
+      for (const endpoint of deleteEndpoints) {
         expect(toolSchemaOverrides.has(endpoint.toolName)).toBe(false);
       }
     });
   });
 
   describe('override structure', () => {
-    it('every override has description, schema, and transform', () => {
+    it('every override has a meaningful description', () => {
       for (const [toolName, override] of toolSchemaOverrides) {
         expect(override.description, `${toolName} missing description`).toBeTruthy();
         expect(override.description.length, `${toolName} description too short`).toBeGreaterThan(10);
-        expect(override.schema, `${toolName} missing schema`).toBeDefined();
-        expect(typeof override.transform, `${toolName} transform not a function`).toBe('function');
       }
     });
 
-    it('every override schema should have at most 8 params', () => {
+    it('write overrides have schema and transform', () => {
+      for (const endpoint of writeEndpoints) {
+        const override = toolSchemaOverrides.get(endpoint.toolName);
+        if (!override) continue;
+        expect(override.schema, `${endpoint.toolName} missing schema`).toBeDefined();
+        expect(typeof override.transform, `${endpoint.toolName} transform not a function`).toBe(
+          'function'
+        );
+      }
+    });
+
+    it('overrides with schema should have at most 8 params', () => {
       for (const [toolName, override] of toolSchemaOverrides) {
+        if (!override.schema) continue;
         const paramCount = Object.keys(override.schema).length;
         expect(paramCount, `${toolName} has too many params (${paramCount})`).toBeLessThanOrEqual(8);
       }
@@ -57,6 +83,7 @@ describe('Tool Schema Overrides', () => {
 
     it('every schema param should be a Zod type', () => {
       for (const [toolName, override] of toolSchemaOverrides) {
+        if (!override.schema) continue;
         for (const [key, schema] of Object.entries(override.schema)) {
           expect(schema instanceof z.ZodType, `${toolName}.${key} is not a ZodType`).toBe(true);
         }
@@ -469,6 +496,88 @@ describe('Tool Schema Overrides', () => {
         body: { contentType: 'Text', content: 'Hello' },
         toRecipients: [{ emailAddress: { address: 'a@b.com' } }],
       });
+    });
+  });
+
+  // ── Email GET endpoints ─────────────────────────────────────────────────────
+
+  describe('list-mail-messages', () => {
+    const override = toolSchemaOverrides.get('list-mail-messages')!;
+
+    it('should have queryTransform', () => {
+      expect(typeof override.queryTransform).toBe('function');
+    });
+
+    it('should accept simple search params', () => {
+      const schema = z.object(override.schema as z.ZodRawShape);
+      expect(schema.safeParse({ search: 'budget report' }).success).toBe(true);
+      expect(schema.safeParse({}).success).toBe(true);
+    });
+
+    it('queryTransform should produce OData params from search', () => {
+      const result = override.queryTransform!({ search: 'budget report' });
+      expect(result['$search']).toBe('"budget report"');
+      expect(result['$top']).toBe('10');
+      expect(result['$orderby']).toBe('receivedDateTime desc');
+      expect(result['$select']).toContain('subject');
+    });
+
+    it('queryTransform should produce $filter from sender and unread', () => {
+      const result = override.queryTransform!({
+        from: 'alice@example.com',
+        unreadOnly: true,
+        count: 5,
+      });
+      expect(result['$filter']).toContain("from/emailAddress/address eq 'alice@example.com'");
+      expect(result['$filter']).toContain('isRead eq false');
+      expect(result['$top']).toBe('5');
+    });
+
+    it('queryTransform should produce $filter from subject', () => {
+      const result = override.queryTransform!({ subject: 'weekly update' });
+      expect(result['$filter']).toContain("contains(subject, 'weekly update')");
+    });
+
+    it('queryTransform should default to 10 results', () => {
+      const result = override.queryTransform!({});
+      expect(result['$top']).toBe('10');
+    });
+  });
+
+  describe('description-only overrides', () => {
+    const descriptionOnlyTools = [
+      'get-mail-message',
+      'get-shared-mailbox-message',
+      'list-mail-folders',
+      'list-mail-attachments',
+      'get-mail-attachment',
+    ];
+
+    for (const toolName of descriptionOnlyTools) {
+      it(`${toolName} should have a description override`, () => {
+        const override = toolSchemaOverrides.get(toolName);
+        expect(override, `${toolName} missing override`).toBeDefined();
+        expect(override!.description.length).toBeGreaterThan(10);
+      });
+    }
+  });
+
+  describe('list-mail-folder-messages', () => {
+    const override = toolSchemaOverrides.get('list-mail-folder-messages')!;
+
+    it('should share the same queryTransform as list-mail-messages', () => {
+      const result = override.queryTransform!({ from: 'bob@example.com', count: 20 });
+      expect(result['$filter']).toContain("from/emailAddress/address eq 'bob@example.com'");
+      expect(result['$top']).toBe('20');
+    });
+  });
+
+  describe('list-shared-mailbox-messages', () => {
+    const override = toolSchemaOverrides.get('list-shared-mailbox-messages')!;
+
+    it('should have queryTransform for search', () => {
+      const result = override.queryTransform!({ search: 'invoice' });
+      expect(result['$search']).toBe('"invoice"');
     });
   });
 });
